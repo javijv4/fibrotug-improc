@@ -2,4 +2,4 @@ work/
 **/__pycache__
 **/.ipynb_checkpoints
 **/*egg*
-**/*.png
+*.png
