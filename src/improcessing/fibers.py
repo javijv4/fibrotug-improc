@@ -7,8 +7,7 @@ Created on Thu Nov 16 14:32:15 2023
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy import signal
-from skimage import filters
-from skimage import morphology
+from skimage import filters, morphology, img_as_ubyte
 
 def prepare_image(im, v_avg_threshold, view_masks):
     im = im[:, 5:-5]
@@ -39,38 +38,23 @@ def prepare_image(im, v_avg_threshold, view_masks):
     
     return C, a
 
-def generate_initial_mask(C, method, block_size = 201, radius = 1,  remove_size=5):
+def generate_initial_mask(image, method, block_size = 201, radius = 1,  remove_size=5):
     """
     :param method: Options are mean, local otsu (param radius), and local (param block_size)
     :return: intitial mask after thresholding
     """ 
-    image = C
     binaryMask = np.zeros_like(image)
 
     if method.lower() == "mean":
         thresh = filters.threshold_mean(image[np.isfinite(image)])
-        binary = image > thresh
-        binaryMask = binary.astype(float)
-
-        binaryMask[np.isclose(binaryMask, 0.)] = np.nan
-        
-        # plt.figure()
-        # plt.imshow(binaryMask)
-        # plt.title(method + " threshold")
-        # plt.show()
+        mask = image > thresh
 
     elif method.lower() == "local otsu":
         selem = morphology.disk(radius)
-        thresh = filters.rank.otsu(image, selem)
-        binary = image < thresh
-        binaryMask = binary.astype(float)
-        
-        # plt.figure()
-        # plt.imshow(binaryMask)
-        # plt.title(method + " threshold")
-        # plt.show()
 
-        binaryMask[np.isclose(binaryMask, 0.)] = np.nan
+        image = img_as_ubyte(image)
+        thresh = filters.rank.otsu(image, selem)
+        mask = image > thresh
   
     elif method.lower() == "local":
         if block_size is None:
@@ -78,22 +62,23 @@ def generate_initial_mask(C, method, block_size = 201, radius = 1,  remove_size=
         thresh = filters.threshold_local(image, block_size=block_size, offset=0)
         mask = image > thresh
         
-        # Removing noise due to local thresholding
-        mask = morphology.remove_small_objects(mask, remove_size)
-        mask = morphology.binary_closing(mask)
 
-        binaryMask = mask.astype(float)
-        binaryMask[np.isclose(binaryMask, 0.)] = np.nan
-
-        plt.figure()
-        plt.imshow(binaryMask)
-        plt.title(method + " threshold")
-        plt.show()
         
     else:
         # Handle the case where the input is not recognized
         print("Input not recognized")
-    
+
+    # # Removing noise due to local thresholding
+    # mask = morphology.remove_small_objects(mask, remove_size)
+    # mask = morphology.binary_closing(mask)
+
+    binaryMask = mask.astype(float)
+    binaryMask[np.isclose(binaryMask, 0.)] = np.nan
+
+    # plt.figure()
+    # plt.imshow(binaryMask)
+    # plt.title(method + " threshold")
+    # plt.show()
     return binaryMask
     
     

@@ -12,8 +12,8 @@ from skimage import io
 import improcessing.actin as actproc
 
 # inputs
-tissue_fldr = 'test_data/'
-which = 'pre'
+tissue_fldr = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/gem04/'
+which = 'post'
 image = io.imread(tissue_fldr + which + '_act.tif')
 tissue_mask = io.imread(tissue_fldr + which + '_mask.tif')
 
@@ -29,14 +29,14 @@ dilation = [4,4,3,3,2,2]
 results, remove_mask = actproc.actin_iterative_thresholding(work_image, thresholds, dilation=dilation, blobs_mask=blobs_mask)
 
 # Local thresholding
-results, remove_mask = actproc.actin_local_thresholding(work_image, results, remove_mask, blobs_mask=blobs_mask)
+angles, remove_mask = actproc.actin_local_thresholding(work_image, results, remove_mask, blobs_mask=blobs_mask)
 print('Myofibril angles calculation complete')
 
 # Compute Sarcomere Mask
-myo_mask = actproc.compute_myofibril_mask(results)
+myo_mask = actproc.compute_myofibril_mask(angles)
 
 # Mask results to tissue mask
-angles, myo_mask = actproc.mask_actin_results(results, myo_mask, tissue_mask)
+angles, myo_mask = actproc.mask_actin_results(angles, myo_mask, tissue_mask)
 print('Sarcomere mask complete')
 
 # Smooth myofibril results

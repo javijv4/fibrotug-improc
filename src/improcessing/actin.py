@@ -50,6 +50,7 @@ def actin_iterative_thresholding(image, thresholds, dilation=2, blobs_mask=None)
     it_remove_mask = np.zeros(image.shape, dtype=bool)
     results = np.zeros(image.shape)
     for i, thresh in enumerate(thresholds):
+        print('Iterative thresholding {}'.format(thresh))
         # Threshold mask
         mask = (image>thresh)
 
