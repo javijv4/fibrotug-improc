@@ -82,6 +82,7 @@ def elastix_simple_transformation(originalArray, movingArray, mode):
 
 
 def apply_transform(movingArray, resultParameters):
+    movingArray = movingArray.astype(np.float32)
     movingImage = itk.GetImageFromArray(movingArray)
     defArray = itk.transformix_filter(movingImage,
             transform_parameter_object = resultParameters,

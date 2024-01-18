@@ -18,21 +18,22 @@ post_mask_file = tissue_fldr + 'post/fibrotug_mask'
 ext = '.tif'
 
 # List all the files to warp and write. The key will be the name of the output file
-# i.e. this will save the warped image in tissue_folder/pre_act.tif 
-towarp = {'pre_act': tissue_fldr + 'pre/A_0.41_0.1_GEM12-01_MAX_c2_ORG',
-          'pre_dsp': tissue_fldr + 'pre/A_0.41_0.1_GEM12-01_MAX_c1_ORG'}
+# i.e. this will save the warped image in tissue_folder/pre_act.tif
+towarp = {'pre_act': tissue_fldr + 'pre/A_0.41_0.1_GEM12-04_MAX_c2_ORG',
+          'pre_dsp': tissue_fldr + 'pre/A_0.41_0.1_GEM12-04_MAX_c1_ORG'}
 
 # List all the files to save in the tissue_folder path. The key will be the name of the output file
-# i.e. this will save the warped image in tissue_folder/pre_act.tif 
-tosave = {'post_act': tissue_fldr + 'post/A_0.41_0.1_GEM12_S2_ET1-01-MAX_c4_ORG',
-          'post_dsp': tissue_fldr + 'post/A_0.41_0.1_GEM12_S2_ET1-01-MAX_c2_ORG'}
+# i.e. this will save the warped image in tissue_folder/pre_act.tif
+tosave = {'post_act': tissue_fldr + 'post/A_0.41_0.1_GEM12_S2_ET1-04-MAX_c4_ORG',
+          'post_dsp': tissue_fldr + 'post/A_0.41_0.1_GEM12_S2_ET1-04-MAX_c2_ORG',
+          'post_fib': tissue_fldr + 'post/A_0.41_0.1_GEM12_S2_ET1-04-MAX_c3_ORG'}
 
 # Read masks
 pre_mask = imageToArray(pre_mask_file + ext)
 post_mask = imageToArray(post_mask_file + ext)
 
 # Elastix transform
-transform_params = elastix_simple_transformation(post_mask, pre_mask, mode='affine')
+transform_params = elastix_simple_transformation(post_mask, pre_mask, mode='translation')
 
 # warp mask
 warped_mask = apply_transform(pre_mask, transform_params)
@@ -54,13 +55,39 @@ for name in tosave.keys():
     io.imsave(tissue_fldr + name + ext, img_as_uint(rescaled_img), check_contrast=False)
 
 
-# Plots
-def remove_background(mask):
-    mask = mask.astype(float)
-    mask[mask==0] = np.nan
-    return mask
+# # Plots
+# def remove_background(mask):
+#     mask = mask.astype(float)
+#     mask[mask==0] = np.nan
+#     return mask
 
-plt.figure()
-plt.imshow(remove_background(post_mask), cmap='Reds', alpha=0.8, vmin=0, vmax=1)
-plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.8, vmin=0, vmax=1)
-plt.axis('off')
+# plt.figure(1, clear=True)
+# plt.imshow(remove_background(post_mask), cmap='Reds', alpha=0.8, vmin=0, vmax=1)
+# plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.8, vmin=0, vmax=1)
+# plt.axis('off')
+# plt.savefig(tissue_fldr + 'plots/mask_comp.png', bbox_inches='tight', pad_inches=0, dpi=300)
+
+# plt.figure(1, clear=True)
+# post_act = imageToArray(tosave['post_act'] + ext)
+# plt.imshow(post_act, cmap='binary_r')
+# plt.imshow(remove_background(post_mask), cmap='Reds', alpha=0.5, vmin=0, vmax=1)
+# # plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.8, vmin=0, vmax=1)
+# plt.axis('off')
+# plt.savefig(tissue_fldr + 'plots/post_mask_act.png', bbox_inches='tight', pad_inches=0, dpi=300)
+
+# plt.figure(1, clear=True)
+# post_act = imageToArray(towarp['pre_act'] + ext)
+# plt.imshow(post_act, cmap='binary_r')
+# plt.imshow(remove_background(pre_mask), cmap='Blues', alpha=0.5, vmin=0, vmax=1)
+# # plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.8, vmin=0, vmax=1)
+# plt.axis('off')
+# plt.savefig(tissue_fldr + 'plots/pre_mask_act.png', bbox_inches='tight', pad_inches=0, dpi=300)
+
+# plt.figure(1, clear=True)
+# pre_act = imageToArray(towarp['pre_act'] + ext)
+# warped_img= apply_transform(pre_act, transform_params)
+# plt.imshow(warped_img, cmap='binary_r')
+# plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.5, vmin=0, vmax=1)
+# # plt.imshow(remove_background(warped_mask), cmap='Blues', alpha=0.8, vmin=0, vmax=1)
+# plt.axis('off')
+# plt.savefig(tissue_fldr + 'plots/warped_mask_act.png', bbox_inches='tight', pad_inches=0, dpi=300)

@@ -24,4 +24,6 @@ dependencies = [
   "scikit-image",
   "imagecodecs",
   "itk-elastix",
+  "opencv-python",
+  "pygmsh",
 ]

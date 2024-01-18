@@ -136,8 +136,8 @@ def compute_myofibril_mask(angles, dilation=2):
 def mask_actin_results(angles, myo_mask, tissue_mask):
     mask = transform.rescale(tissue_mask, 2)
     mask = mask.astype(bool)
-    angles[~mask] = 0
     myo_mask[~mask] = 0
+    angles[myo_mask==0] = 0
 
     return angles, myo_mask
 
@@ -156,7 +156,68 @@ def smooth_actin_angles(angles, myo_mask, window_size = 11, resize=0.5):
     if resize != 1.0:
         smooth_angles = transform.rescale(smooth_angles, resize)
         myo_mask = transform.rescale(myo_mask, resize)
-    smooth_angles[myo_mask==0] = np.nan
 
     return smooth_angles
+
+def compute_dispersion(angles, myo_mask, window_size = 11, resize=0.5):
+    from scipy.signal import convolve
+    window = np.ones([window_size, window_size])
+
+    fx = np.cos(angles)
+    fy = np.sin(angles)
+
+    sum_fx = convolve(fx, window, mode='same', method='direct')
+    sum_fy = convolve(fy, window, mode='same', method='direct')
+    sum_mask = convolve(myo_mask, window, mode='same', method='direct')
+
+    mean_fx = np.zeros_like(angles)
+    mean_fx[myo_mask==1] = sum_fx[myo_mask==1]/sum_mask[myo_mask==1]
+    mean_fy = np.zeros_like(angles)
+    mean_fy[myo_mask==1] = sum_fy[myo_mask==1]/sum_mask[myo_mask==1]
+    norm = np.sqrt(mean_fx**2 + mean_fy**2)
+    mean_fx[norm > 0] = mean_fx[norm > 0]/norm[norm > 0]
+    mean_fy[norm > 0] = mean_fy[norm > 0]/norm[norm > 0]
+
+    fx[myo_mask==0] = np.nan
+    fy[myo_mask==0] = np.nan
+
+    dispersion = np.zeros_like(angles)
+    for i in range(angles.shape[0]):
+        for j in range(angles.shape[1]):
+            if myo_mask[i,j] == 0: continue
+            imin = np.max([0, i-window_size])
+            imax = np.min([angles.shape[0]-1, i+window_size])
+            jmin = np.max([0, j-window_size])
+            jmax = np.min([angles.shape[1]-1, j+window_size])
+            N = np.sum(myo_mask[imin:imax,jmin:jmax])
+            if N <2:
+                continue
+
+            theta = np.arcsin(mean_fx[i,j]*fy[imin:imax,jmin:jmax] -
+                                        mean_fy[i,j]*fx[imin:imax,jmin:jmax])
+
+            # Von Mises dispersion
+            R = np.sqrt((np.nansum(np.nansum(np.cos(theta*2+np.pi)))/N)**2 + (np.nansum(np.nansum(np.sin(theta*2+np.pi)))/N)**2);
+            dispersion[i,j] = 0.5*(1-R);
+
+    if resize != 1.0:
+        dispersion = transform.rescale(dispersion, resize)
+        myo_mask = transform.rescale(myo_mask, resize)
+
+    return dispersion
+
+
+def nearest_interpolation(interpolate_mask, myo_mask, angles):
+    mask = myo_mask.astype(int) - interpolate_mask.astype(int)
+    mask[mask<0] = 0
+
+    # Nearest neighbor interpolation
+    from scipy.spatial import KDTree
+    interp_points = np.vstack(np.where(interpolate_mask==1)).T
+    myo_points = np.vstack(np.where(mask==1)).T
+    myo_vector = angles[mask==1]
+    tree = KDTree(myo_points)
+    dist, corr = tree.query(interp_points)
+    angles[interpolate_mask==1] = myo_vector[corr]
+    return angles
 
