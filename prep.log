@@ -1,0 +1,26 @@
+Obtained 10 stack frames.
+cheartsolver.out(printstack_wrapper+0x2c) [0x64d563588eec]
+cheartsolver.out(__assertion_support_MOD_throw_error+0xac) [0x64d563537a1c]
+cheartsolver.out(+0x843153) [0x64d5631a1153]
+cheartsolver.out(__main_blocks_MOD_read_program_actions+0x5fc) [0x64d563071cec]
+cheartsolver.out(__main_blocks_MOD_cheart_commandline_and_pfile_io+0xf7) [0x64d563077f97]
+cheartsolver.out(+0x6c95c1) [0x64d5630275c1]
+cheartsolver.out(main+0x1f) [0x64d563020c9f]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x29d90) [0x77456a829d90]
+/usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x80) [0x77456a829e40]
+cheartsolver.out(_start+0x25) [0x64d563020e95]
+ number of procs: 1
+/home/jilberto/software/cheart/source-code/src/MathRoutines/cheart_textIO_stringops.f90:410:0: Error opening file prep.P.  Problem file prep.P could not be found...
+Obtained 10 stack frames.
+cheartsolver.out(printstack_wrapper+0x2c) [0x5c8eeab1beec]
+cheartsolver.out(__assertion_support_MOD_throw_error+0xac) [0x5c8eeaacaa1c]
+cheartsolver.out(+0x843153) [0x5c8eea734153]
+cheartsolver.out(__main_blocks_MOD_read_program_actions+0x5fc) [0x5c8eea604cec]
+cheartsolver.out(__main_blocks_MOD_cheart_commandline_and_pfile_io+0xf7) [0x5c8eea60af97]
+cheartsolver.out(+0x6c95c1) [0x5c8eea5ba5c1]
+cheartsolver.out(main+0x1f) [0x5c8eea5b3c9f]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x29d90) [0x7ecdb2e29d90]
+/usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x80) [0x7ecdb2e29e40]
+cheartsolver.out(_start+0x25) [0x5c8eea5b3e95]
+ number of procs: 1
+/home/jilberto/software/cheart/source-code/src/MathRoutines/cheart_textIO_stringops.f90:410:0: Error opening file prep_cells.P.  Problem file prep_cells.P could not be found...

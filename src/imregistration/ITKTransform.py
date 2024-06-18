@@ -66,6 +66,8 @@ def elastix_simple_transformation(originalArray, movingArray, mode):
     # Import Default Parameter Map
     parameter_object = itk.ParameterObject.New()
     default_rigid_parameter_map = parameter_object.GetDefaultParameterMap(mode)
+    default_rigid_parameter_map['FinalBSplineInterpolationOrder'] = ['0']
+    default_rigid_parameter_map['NumberOfResolutions'] = ['6']
     parameter_object.AddParameterMap(default_rigid_parameter_map)
 
     # Load Elastix Image Filter Object
@@ -90,7 +92,7 @@ def apply_transform(movingArray, resultParameters):
     defArray = itk.GetArrayFromImage(defArray).astype(float)
 
     # Rescale intensity to 0-1 range
-    defArray = (rescale_intensity(defArray)+1)/2
+    defArray = rescale_intensity(defArray)
     return defArray
 
 

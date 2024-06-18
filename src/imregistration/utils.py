@@ -7,10 +7,29 @@ Created on Wed Dec  6 16:40:34 2023
 """
 
 import numpy as np
-from skimage import transform, measure, draw
+from skimage import transform, measure, draw, morphology
 from scipy import ndimage, optimize
 import cv2
+from matplotlib.widgets import Slider, TextBox, RectangleSelector
+import matplotlib.pyplot as plt
 
+
+def normalize_image(image, mask=None, binary=False):
+    if mask is not None:
+        mask = morphology.binary_erosion(mask, morphology.disk(5))
+        vmin = image[mask].min()
+        vmax = image[mask].max()
+    else:
+        vmin = image.min()
+        vmax = image.max()
+    image = (image - vmin)/(vmax - vmin)
+    if binary:
+        image = image > 0.5
+
+    image[image<0] = 0
+    image[image>1] = 1
+    
+    return image
 
 def rotate_crop(imgs, rotation, crop, npad=20):
     new_imgs = {}
@@ -20,6 +39,85 @@ def rotate_crop(imgs, rotation, crop, npad=20):
         new_imgs[name] = new_img
 
     return new_imgs
+
+def rotate_interactive(mask, params):
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(bottom=0.25)
+
+    # Display the initial image
+    ax.imshow(mask, cmap='binary_r')
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    hlines = np.linspace(*ylim, 20)
+    hlines += (hlines[1]-hlines[0])/2
+    ax.hlines(hlines, *xlim, color='r', lw=0.5)
+    ax.set_ylim(ylim)
+
+    # Create a slider for rotation angle
+    ax_angle = plt.axes([0.25, 0.1, 0.65, 0.03])
+    slider_angle = Slider(ax_angle, 'Rotation Angle', -180, 180, valinit=0)
+    
+    # Create a text box for entering the rotation angle
+    ax_textbox = plt.axes([0.25, 0.05, 0.65, 0.03])
+    textbox_angle = TextBox(ax_textbox, 'Rotation Angle', initial='0')
+
+    # Function to update the image based on the rotation angle entered in the text box
+    def update_rotation_textbox(text):
+        try:
+            params[0] = float(text)
+            rotated_tissue = transform.rotate(mask, params[0])
+            ax.clear()
+            ax.imshow(rotated_tissue, cmap='binary_r')
+            ax.hlines(hlines, *xlim, color='r', lw=0.5)
+            ax.set_ylim(ylim)
+            return params[0]
+        except ValueError:
+            pass
+
+    # Register the update function with the text box
+    textbox_angle.on_submit(update_rotation_textbox)
+    # Function to update the image based on the rotation params[0]
+    def update_rotation(val):
+        params[0] = slider_angle.val
+        rotated_tissue = transform.rotate(mask, params[0])
+        ax.clear()
+        ax.imshow(rotated_tissue, cmap='binary_r')
+        ax.hlines(hlines, *xlim, color='r', lw=0.5)
+        ax.set_ylim(ylim)   
+        return params[0]
+
+    # Register the update function with the slider
+    slider_angle.on_changed(update_rotation)
+    plt.show()
+
+    return params
+
+
+
+
+class CroppingWindow:
+    def __init__(self, image):
+        self.image = image
+        self.fig, self.ax = plt.subplots()
+        self.ax.imshow(self.image)
+        self.rs = RectangleSelector(self.ax, self.onselect, useblit=True, interactive=True)
+        plt.connect('key_press_event', self.toggle_selector)
+        plt.show()
+
+    def onselect(self, eclick, erelease):
+        self.x1, self.y1 = int(eclick.xdata), int(eclick.ydata)
+        self.x2, self.y2 = int(erelease.xdata), int(erelease.ydata)
+
+    def toggle_selector(self, event):
+        if event.key in ['Q', 'q'] and self.rs.active:
+            self.rs.set_active(False)
+        if event.key in ['A', 'a'] and not self.rs.active:
+            self.rs.set_active(True)
+
+def crop_interactive(image, rotation):
+    image = transform.rotate(image, rotation)
+    cropping_window = CroppingWindow(image)
+    return cropping_window.x1, cropping_window.x2, cropping_window.y1, cropping_window.y2
 
 
 def find_box_points(hull, npad=20):

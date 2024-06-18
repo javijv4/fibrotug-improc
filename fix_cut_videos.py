@@ -10,10 +10,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io, transform, exposure
 
-fname = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/gem04/exp/A_0.41_0.1_GEM12-S2-04'
+fname = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2/wt05/day7/A_0.41_0.1_DSPwt_s4-day7-05'
 img = io.imread(fname + '.tif')
-cut = 511
-rot = -65
+cut = 512
+rot = 0
 
 shape_x = img.shape[1]
 
@@ -42,7 +42,5 @@ plt.figure(1, clear=True)
 plt.imshow(adjust_contrast(new_img[10]), cmap='binary_r')
 plt.vlines(np.arange(0, shape_x, 100)[1:], 0, shape_x, colors='r')
 plt.ylim([0, shape_x])
-
-# for i in range()
 
 io.imsave(fname + '_fix.tif', new_img)
