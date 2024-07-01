@@ -16,12 +16,16 @@ import cheartio as chio
 import phasegen.gen_topologies as gt
 from skimage import io as skio
 
-np.random.seed(1992)
+seed = 19910
+np.random.seed(seed)
 pixel_size = 0.390*1e-3  #um
 elongation_factor = 5
 
-tissue_fldr = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2/gem02/'
+tissue_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/fibrotug-dsp-sims/3P/Tissues/gem10/'
+print(tissue_fldr)
 cell_generation = 'random'
+use_utc = True
+use_dsp_rho = False
 
 mesh_fldr = tissue_fldr + 'mesh/'
 data_fldr = tissue_fldr + 'data/'
@@ -38,7 +42,7 @@ bdata = chio.read_bfile(mesh_fldr + 'tissue')
 #     os.remove(file_path)
 
 # Seed nuclei
-bk = skio.imread(exp_fldr + 'tissue_mask.tif')
+bk = skio.imread(exp_fldr + 'pre_tissue_mask.tif')
 bk_dist = distance_transform_edt(bk)
 
 if cell_generation == 'random':
@@ -48,7 +52,6 @@ elif cell_generation == 'image':
 ijcells = np.round(xycells).astype(int)
 bk_cells = bk[ijcells[:,0], ijcells[:,1]]
 xycells = xycells[bk_cells>0]
-# xycells = np.fliplr(xycells)
 
 # Plotting cell centers
 plt.figure(1, clear=True)
@@ -57,14 +60,27 @@ plt.plot(xycells[:,1], xycells[:,0], 'o')
 plt.axis('off')
 plt.savefig(png_dump + 'img_cell_centers.png', dpi=180, bbox_inches='tight', pad_inches=0)
 
-# Change dimensions to mesh
-xycells *= pixel_size
 
 # Loading mesh
-bnodes = bdata[:,1:-1]
 xyz = mesh.points
 ien = mesh.cells[0].data
 triang = tri.Triangulation(xyz[:,0], xyz[:,1], ien)
+
+
+# Assign elements to cells
+if use_utc:
+    axis_dir, trans_dir = gt.get_utc_images(bk)
+    ijk = np.round(xyz/pixel_size).astype(int)
+    utc = gt.get_utc(ijk, axis_dir, trans_dir)
+    utc_cells = gt.get_utc(ijcells, axis_dir, trans_dir)
+
+    cell_number = gt.assign_elements_to_cells(utc_cells, utc, ien, elongation_factor/2.5)
+
+else:
+    cell_number = gt.assign_elements_to_cells(xycells, xyz, ien, elongation_factor)
+
+# Change dimensions to mesh
+xycells *= pixel_size
 
 # Plotting mesh and cell centers
 plt.figure(2, clear=True)
@@ -73,9 +89,6 @@ plt.plot(xycells[:,0], xycells[:,1], 'k.', ms=2)
 plt.gca().set_aspect('equal')
 plt.axis('off')
 plt.savefig(png_dump + 'mesh_cell_centers.png', dpi=180, bbox_inches='tight', pad_inches=0)
-
-# Assign elements to cells
-cell_number = gt.assign_elements_to_cells(xycells, xyz, ien, elongation_factor)
 
 # Checking for isolated cells
 neigh_elems, neigh_cells = gt.get_elem_neighbors(ien, cell_number)
@@ -111,16 +124,16 @@ chio.write_bfile(mesh_fldr + 'tissue_disc', disc_bdata)
 io.write(data_fldr + 'disc_mesh.vtu', disc_mesh)
 
 # Generating cell mesh
-cell_mesh, connected_nodes, cell_mesh_map = gt.generate_connected_disc_mesh(mesh, cell_number, dsp_density=dsp_rho)
+if use_dsp_rho:
+    cell_mesh, connected_nodes, cell_mesh_map = gt.generate_connected_disc_mesh(mesh, cell_number, dsp_density=dsp_rho)
+else:
+    cell_mesh, connected_nodes, cell_mesh_map = gt.generate_connected_disc_mesh(mesh, cell_number)
 cell_mesh.cell_data['cell_number'] = [cell_number]
 
 io.write(data_fldr + 'cell_mesh.vtu', cell_mesh)
 
 chio.write_mesh(mesh_fldr + 'tissue_cell', cell_mesh.points, cell_mesh.cells[0].data)
 chio.write_bfile(mesh_fldr + 'tissue_cell', bdata)
-
-# Run prep
-gt.prep_cheart()
 
 # To visualize
 cell_boundary_mesh = gt.get_boundary_mesh(mesh, connected_nodes, disc_mesh)

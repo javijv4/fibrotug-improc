@@ -100,6 +100,7 @@ class CroppingWindow:
         self.image = image
         self.fig, self.ax = plt.subplots()
         self.ax.imshow(self.image)
+        self.ax.set_title('Select the region to crop')
         self.rs = RectangleSelector(self.ax, self.onselect, useblit=True, interactive=True)
         plt.connect('key_press_event', self.toggle_selector)
         plt.show()

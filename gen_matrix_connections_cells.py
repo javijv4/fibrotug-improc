@@ -14,32 +14,43 @@ from scipy.interpolate import interp1d
 import random
 
 
-tissue_fldr = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2/gem02/'
+tissue_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/fibrotug-dsp-sims/3P/Tissues/gem02/'
 mesh = chio.read_mesh(tissue_fldr + 'mesh/tissue', meshio=True)
 cell_number = chio.read_dfile(tissue_fldr + 'data/cell_number.FE')
-fibelem = chio.read_dfile(tissue_fldr + 'data/fiber_density_elem.FE')
+fibelem = chio.read_dfile(tissue_fldr + 'data/pre_fiber_density_elem.FE')
 sarc_rho = chio.read_dfile(tissue_fldr + 'data/pre_actin_density.FE')
 sarcelem = np.mean(sarc_rho[mesh.cells[0].data], axis=1)
 
-cell_labels = np.unique(cell_number)
+method = 'by_cell'
+cell_matrix_rho = 0.1
+
 connections = np.zeros(len(cell_number))
-for e in range(len(cell_labels)):
-    cell_elems = np.where(cell_number==e)[0]
-    nelems = len(cell_elems)
-    cell_fib = fibelem[cell_elems]
-    cell_sarc = sarcelem[cell_elems]
+if method == 'by_cell':
+    cell_labels = np.unique(cell_number)
+    for e in range(len(cell_labels)):
+        cell_elems = np.where(cell_number==e)[0]
+        nelems = len(cell_elems)
+        cell_fib = fibelem[cell_elems]
+        cell_sarc = sarcelem[cell_elems]
 
-    candidate_elems = cell_elems[(cell_fib>0.8)*(cell_sarc>0.8)]
-    print(len(candidate_elems))
-    n = np.max([int(nelems/10), int(len(candidate_elems)/5)])
+        candidate_elems = cell_elems[(cell_fib>0.8)*(cell_sarc>0.8)]
+        n = int(nelems*cell_matrix_rho)
 
-    if len(candidate_elems) < n:
-        connections[candidate_elems] = 1
-        print('Cell {} has less than 10% of the elements with high fiber and actin density'.format(e))
-    else:
-        celems = random.sample(list(candidate_elems), n)
-        connections[celems] = 1
-        print('Cell {} has {} elements with high fiber and actin density'.format(e, n))
+        if len(candidate_elems) < n:
+            connections[candidate_elems] = 1
+            print('Cell {} has less than 10% of the elements with high fiber and actin density'.format(e))
+        else:
+            celems = random.sample(list(candidate_elems), n)
+            connections[celems] = 1
+            print('Cell {} has {} elements with high fiber and actin density'.format(e, n))
+
+elif method == 'by_tissue':
+    nelems = len(cell_number)
+    candidate_elems = np.where((fibelem>0.8)*(sarcelem>0.8))
+    n = int(nelems*cell_matrix_rho)
+
+    celems = random.sample(list(candidate_elems), n)
+    connections[celems] = 1
 
 
 # xyz = mesh.points

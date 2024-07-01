@@ -6,6 +6,8 @@ Created on Mon Apr 22 11:37:46 2024
 @author: Javiera Jilberto Vallejos
 """
 
+import os
+from glob import glob
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -102,7 +104,7 @@ class DSPProtocolTissue:
 
         # Adjust to real dimensions
         mesh.points = mesh.points * pixel_size
-        
+
         # Find boundary
         xyz = mesh.points
         ien = mesh.cells[0].data
@@ -141,8 +143,14 @@ class DSPProtocolTissue:
         chio.write_mesh(self.mesh_folder + 'tissue', mesh.points, mesh.cells[0].data)
         chio.write_bfile(self.mesh_folder + 'tissue', bdata)
 
+        # Save data points
         for field in  mesh.point_data:
-            chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
+            if 'vector' in field:
+                aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
+                save = np.hstack([mesh.point_data[field][:,0:2], aux])
+                chio.write_dfile(self.data_folder + field + '.FE', save)
+            else:
+                chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
         for field in  mesh.cell_data:
             chio.write_dfile(self.data_folder + field + '.FE', mesh.cell_data[field][0])
 
@@ -169,7 +177,7 @@ class DSPProtocolTissue:
         # Crop
         box = crop_interactive(image, rot)
 
-        params = [rot, *box]
+        params = np.array([rot, *box])
         np.save(self.folder + fixed_image + 'rotation_crop_params.npy', params)
         return params
 
@@ -246,11 +254,24 @@ class DSPProtocolTissue:
         mov_points = np.array([moving_lims[:,0], midline, moving_lims[:,1]]).T
         disp_vals = np.array([disp[:,0], np.zeros(len(disp)), disp[:,1]]).T
 
+        sizex = moving_mask.shape[1]
         for i in range(fixed_mask.shape[0]):
-            f = interp1d(mov_points[i], disp_vals[i], fill_value='extrapolate')
+            if np.isclose(mov_points[i,0], 0):
+                mpoints = np.append(mov_points[i], sizex)
+                dvals = np.append(disp_vals[i], disp_vals[i,-1])
+            elif np.isclose(mov_points[i,-1], sizex-1):
+                mpoints = np.append(0, mov_points[i])
+                dvals = np.append(disp_vals[i,0], disp_vals[i])
+            else:
+                mpoints = np.append(0, mov_points[i])
+                mpoints = np.append(mpoints, sizex)
+                dvals = np.append(disp_vals[i,0], disp_vals[i])
+                dvals = np.append(dvals, disp_vals[i,-1])
+
+            f = interp1d(mpoints, dvals, fill_value='extrapolate')
             warping_width[i] = f(x_coord)
 
-        warping_width = filters.gaussian(warping_width, sigma=(10,1))
+        warping_width = filters.gaussian(warping_width, sigma=(20,2))
 
         def warp_func(ij):
             ij = ij.astype(int)
@@ -403,6 +424,17 @@ class DSPProtocolTissue:
         plt.tight_layout()
 
 
+    def save_images(self, folder):
+        for name in self.pre_images.keys():
+            image = self.pre_images[name]
+            if 'mask' in name:
+                image = image.astype(np.uint8)
+            io.imsave(folder + 'pre_' + name + '.tif', image, check_contrast=False)
+        for name in self.post_images.keys():
+            image = self.post_images[name]
+            if 'mask' in name:
+                image = image.astype(np.uint8)
+            io.imsave(folder + 'post_' + name + '.tif', image, check_contrast=False)
 
 
 class FtugTissue:
@@ -450,6 +482,7 @@ class FtugTissue:
             tissue_mask = tissue_mask_from_actin + tissue_mask_from_fibers
         else:
             tissue_mask = tissue_mask_from_fibers
+        self.tissue_mask = tissue_mask
         io.imsave(self.tissue_fldr + '/tissue_mask_init.tif', tissue_mask.astype(np.int8), check_contrast=False)
         self.images['tissue_mask'] = self.tissue_mask
 
@@ -695,11 +728,31 @@ class FtugTissue:
                  dispersion=self.actin_dispersion, density=self.actin_density)
 
 
+    def create_cell_mask(self):
+        actin_mask = self.actin_mask
+        cell_mask = morphology.remove_small_objects(actin_mask, min_size=1000)
+        cell_mask = morphology.remove_small_holes(cell_mask, area_threshold=1000)
+        cell_mask = morphology.binary_dilation(cell_mask, morphology.disk(10))
+        cell_mask = filters.gaussian(cell_mask, sigma=5) > 0.5
+        cell_density = filters.gaussian(cell_mask, sigma=2)
+
+        self.cell_mask = cell_mask
+        self.cell_density = cell_density
+
+        self.images['cell_mask'] = cell_mask
+        self.images['cell_density'] = cell_density
+
+        io.imsave(self.tissue_fldr + 'cell_mask.tif', cell_mask.astype(np.int8), check_contrast=False)
+
+        np.savez(self.tissue_fldr + 'improc_actin', angles=self.actin_angle, mask=self.actin_mask,
+                 dispersion=self.actin_dispersion, density=self.actin_density,
+                 cell_mask=self.cell_mask, cell_density=self.cell_density)
+
 
     """
     DSP PROCESSING
     """
-    def process_dsp(self, force_compute=False):
+    def process_dsp(self, method='window', mask_method=1, force_compute=False):
         if not force_compute:
             try:
                 data = np.load(self.tissue_fldr + 'improc_dsp.npz')
@@ -712,10 +765,13 @@ class FtugTissue:
                 pass
 
         print('Processing DSP')
-        self.dsp_mask = dspproc.process_dsp_image(self.dsp_image, self.tissue_mask)
+        if mask_method == 1:
+            self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask)
+        elif mask_method == 2:
+            self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask, self.fiber_mask)
 
-        dsp_density = filters.gaussian(self.dsp_mask, sigma=25)
-        self.dsp_density = dsp_density/np.max(dsp_density)
+
+        self.dsp_density = dspproc.process_dsp(self.dsp_mask, method=method)
         self.dsp_density[self.tissue_mask==0] = 0
         self.dsp_mask[self.tissue_mask==0] = 0
 
@@ -737,10 +793,14 @@ class FtugTissue:
         self.actin_mask = data['mask']
         self.actin_dispersion = data['dispersion']
         self.actin_density = data['density']
+        self.cell_mask = data['cell_mask']
+        self.cell_density = data['cell_density']
         self.images['actin_density'] = self.actin_density
         self.images['actin_angle'] = self.actin_angle
         self.images['actin_dispersion'] = self.actin_dispersion
         self.images['actin_mask'] = self.actin_mask
+        self.images['cell_mask'] = self.cell_mask
+        self.images['cell_density'] = self.cell_density
 
         data = np.load(self.tissue_fldr + 'improc_fiber.npz')
         self.fiber_angle = data['angles']
@@ -879,3 +939,35 @@ class FtugTissue:
         axs[1].axis('off')
         axs[1].set_title('DSP Mask')
         plt.savefig(folder + 'dsp_mask_zoom.png', bbox_inches='tight', dpi=180)
+
+
+
+
+def find_images(tissue_fldr, load=False):
+    images = {}
+    tif_files = glob(tissue_fldr + '*.tif')
+    for tif_file in tif_files:
+        if 'day7' in tissue_fldr:
+            if 'c1+2+3' in tif_file:
+                continue
+            elif 'c1' in tif_file:
+                images['dsp'] = os.path.basename(tif_file)
+            elif 'c2' in tif_file:
+                images['fibers'] = os.path.basename(tif_file)
+            elif 'c3' in tif_file:
+                images['actin'] = os.path.basename(tif_file)
+        elif 'day9' in tissue_fldr:
+            if 'c1+2+3' in tif_file:
+                continue
+            elif 'c2' in tif_file:
+                images['dsp'] = os.path.basename(tif_file)
+            elif 'c3' in tif_file:
+                images['fibers'] = os.path.basename(tif_file)
+            elif 'c4' in tif_file:
+                images['actin'] = os.path.basename(tif_file)
+
+    if load:
+        for key in images.keys():
+            images[key] = io.imread(tissue_fldr + images[key])
+
+    return images

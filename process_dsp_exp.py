@@ -8,12 +8,12 @@ Created on Mon Apr 22 08:54:46 2024z
 
 import os
 import numpy as np
-from FtugTissue import FtugTissue, DSPProtocolTissue
+from FtugTissue import FtugTissue, DSPProtocolTissue, find_images
 import matplotlib.pyplot as plt
 import meshio as io
 from skimage import io as skio
 
-tissue_fldr = '../DSP/Tissues/dataset2/gem02/'
+tissue_fldr = '../DSP/Tissues/dataset2/gem03/'
 png_dump = tissue_fldr + 'png_dump/'
 exp_fldr = tissue_fldr + 'exp/'
 mesh_fldr = tissue_fldr + 'mesh/'
@@ -21,18 +21,14 @@ data_fldr = tissue_fldr + 'data/'
 
 downsample = 10
 meshsize = 5
-pixel_size = 0.390*1e-3  #um
+pixel_size = 0.390*1e-3  #mm
 
 pre_fldr = tissue_fldr + 'day7/'
-pre_images = {'dsp': 'A_0.41_0.1_GEM12_s1_day7-02_MAX_c1_ORG.tif',
-          'fibers': 'A_0.41_0.1_GEM12_s1_day7-02_MAX_c2_ORG.tif',
-          'actin': 'A_0.41_0.1_GEM12_s1_day7-02_MAX_c3_ORG.tif'}
+pre_images = find_images(pre_fldr)
 
 
 post_fldr = tissue_fldr + 'day9/'
-post_images = {'dsp': 'A_0.41_0.1_GEM12_s1_day9-02_MAX_c2_ORG.tif',
-            'fibers': 'A_0.41_0.1_GEM12_s1_day9-02_MAX_c3_ORG.tif',
-            'actin': 'A_0.41_0.1_GEM12_s1_day9-02_MAX_c4_ORG.tif'}
+post_images = find_images(post_fldr)
 
 
 # Creating folders
@@ -61,10 +57,9 @@ dspexp.plot_images(which=['fibers', 'fiber_density', 'fiber_angle', 'fiber_dispe
 plt.savefig(png_dump + 'fiber.png')
 dspexp.plot_images(which=['dsp', 'dsp_density'])
 plt.savefig(png_dump + 'dsp.png')
+dspexp.save_images(exp_fldr)
 
 mesh = dspexp.generate_mesh(downsample=downsample, meshsize=meshsize, pixel_size=pixel_size)
 io.write(mesh_fldr + 'mesh.vtu', mesh)
 
-# Save tissue mask
-skio.imsave(exp_fldr + 'tissue_mask.tif', dspexp.mesh_tissue_mask)
 

@@ -52,6 +52,33 @@ def seed_random_cells(bk, bk_dist):
 
     return xycells
 
+
+def get_utc_images(bk):
+    i = np.arange(bk.shape[0])
+    j = np.arange(bk.shape[1])
+    I, J = np.meshgrid(j, i)
+
+    axis_dir = J/np.max(J)
+    trans_dir = np.zeros_like(axis_dir)
+    for i in range(J.shape[0]):
+        lims = np.where(bk[i,:]>0)[0][np.array([0,-1])]
+        size = lims[1]-lims[0]
+        trans_dir[i] = (I[i]-lims[0])/size
+
+    trans_dir[trans_dir < 0] = 0
+    trans_dir[trans_dir > 1] = 1
+
+    return axis_dir, trans_dir
+
+
+def get_utc(ij, axis_dir, trans_dir):
+    axis = axis_dir[ij[:,0], ij[:,1]]
+    trans = trans_dir[ij[:,0], ij[:,1]]
+    utc = np.vstack([axis, trans]).T
+
+    return utc
+
+
 def assign_elements_to_cells(xycells, xyz, ien, elongation_factor):
     # # Map bk_dist to mesh # TODO use this as y so the cells follow the boundary
     # ij_nodes = np.floor(mesh.points/pixel_size).astype(int)
@@ -356,6 +383,7 @@ def generate_connected_disc_mesh(mesh, cell_number, dsp_density=None):
 
 def prep_cheart():
     # Run cheart
+    print('Running cheart')
     with open('prep.log', 'w') as ofile:
         p1 = Popen(['cheartsolver.out', 'prep.P', '--prep'],
                 stdout=ofile, stderr=ofile)
