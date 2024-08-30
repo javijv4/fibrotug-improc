@@ -3,12 +3,16 @@ import meshio as io
 import cheartio as chio
 from scipy.spatial import KDTree, ConvexHull, distance_matrix
 from subprocess import Popen
+from tqdm import tqdm
+from scipy.spatial import ConvexHull
+from sklearn.decomposition import PCA
+import numpy as np
 
 params = {'ncells': 80,
         'window': 10,
-        'min_cell_distance': 40,
-        'min_post_distance': 10,
-        'min_bound_distance': 30,
+        'min_cell_distance': 50,
+        'min_post_distance': 20,
+        'min_bound_distance': 10,
         'cell_long_axis': 50,
         'cell_short_axis': 20}
 
@@ -45,7 +49,7 @@ def seed_random_cells(bk, bk_dist):
                 loop = False
             it+=1
 
-        if it == maxit:
+        if it == maxit:  # TODO if it fails, decrease the min_cell_distance and retry
             print('Sedding failed. Cells seeded: ' + str(i))
             xycells = xycells[0:i]
             break
@@ -157,7 +161,7 @@ def get_surface_normals(points, ien, vol_elems=None):
 
 def get_elem_neighbors(ien, cell_number):
     neigh_elems = np.zeros([len(ien), 3], dtype=int)
-    for e in range(len(cell_number)):
+    for e in tqdm(range(len(cell_number))):
         elem_nodes = ien[e]
         neigh = np.where(np.sum(np.isin(ien, elem_nodes), axis=1)==2)[0]
         neighbors = -np.ones(3, dtype=int)
@@ -284,22 +288,40 @@ def distance_point_hull(hull, p0):
 
     return distance
 
-def get_connected_boundary(points, max_angle):
+def get_connected_boundary(points, max_param, method='major_axis'):
 
     hull = ConvexHull(points)
-    hull_normals = get_surface_normals(hull.points, hull.simplices)
-    connected_node = np.zeros(len(points), dtype=bool)
-    for i in range(len(points)):
-        distance = distance_point_hull(hull, points[i])
-        min_nodes = np.where(np.isclose(distance, np.min(distance)))[0]
-        point_normal = hull_normals[min_nodes, 0:2]
-        angle = np.arccos(np.abs(np.dot(point_normal, np.array([1,0]))))
-        connected_node[i] = np.any(angle < max_angle)
+
+    if method == 'major_axis':
+        def fit_ellipse(hull_points):
+            pca = PCA(n_components=2)
+            pca.fit(hull_points)
+            center = pca.mean_
+            major_axis = pca.components_[0]
+            return center, major_axis
+
+        center, major_axis = fit_ellipse(hull.points)
+        major_axis_dist = major_axis@(hull.points-center).T
+        farthest_points = [np.argmin(major_axis_dist), np.argmax(major_axis_dist)]
+        neg_length = np.linalg.norm(hull.points[farthest_points[0]]-center)
+        pos_length = np.linalg.norm(hull.points[farthest_points[1]]-center)
+
+        connected_node = (major_axis_dist > pos_length*max_param) + (major_axis_dist < -neg_length*max_param)
+
+    if method == 'line_normals':
+        hull_normals = get_surface_normals(hull.points, hull.simplices)
+        connected_node = np.zeros(len(points), dtype=bool)
+        for i in range(len(points)):
+            distance = distance_point_hull(hull, points[i])
+            min_nodes = np.where(np.isclose(distance, np.min(distance)))[0]
+            point_normal = hull_normals[min_nodes, 0:2]
+            angle = np.arccos(np.abs(np.dot(point_normal, np.array([1,0]))))
+            connected_node[i] = np.any(angle < max_param)
 
     return connected_node
 
 
-def find_connected_nodes(mesh, mask, connected_nodes=np.array([])):
+def find_connected_nodes(mesh, mask, connected_nodes=np.array([]), method='major_axis'):
     xyz = mesh.points
     ien = mesh.cells[0].data
 
@@ -309,7 +331,15 @@ def find_connected_nodes(mesh, mask, connected_nodes=np.array([])):
     tri_elem, line_ien = get_surface_mesh(ien_cell)
     line_nodes = np.unique(line_ien)
     points = xyz[line_nodes]
-    connected_node = get_connected_boundary(points, np.pi/2*0.93)
+
+    if method == 'major_axis':
+        max_param = 0.6
+    elif method == 'line_normals':
+        max_param = np.pi/2*0.93
+    else:
+        raise ValueError('Method not recognized')
+
+    connected_node = get_connected_boundary(points, max_param, method='major_axis')
     nodes_to_connect = line_nodes[connected_node]
     connected_nodes = np.append(connected_nodes, nodes_to_connect)
 
@@ -408,3 +438,30 @@ def get_boundary_mesh(mesh, connected_nodes, disc_mesh):
                                 cell_data = {'connected': [cell_connected_boundary]},
                                 point_data = {'connected': cell_connected_nodes})
     return cell_boundary_mesh
+
+def get_line_disc_mesh(cell_disc_mesh, cell_number, boundary_nodes, disc_bdata, map_new_nodes):
+    ncells = np.max(cell_number)
+
+    connected_nodes = np.array([], dtype=int)
+    for i in range(1, ncells):
+        mask = cell_number == i
+        connected_nodes = find_connected_nodes(cell_disc_mesh, mask, connected_nodes)
+
+    disc_bnodes = np.unique(disc_bdata[:,1:-1])
+    connected_nodes = np.setdiff1d(connected_nodes, disc_bnodes)
+    connected_nodes = np.setdiff1d(connected_nodes, boundary_nodes)
+    connected_nodes = np.append(connected_nodes, map_new_nodes[connected_nodes])
+
+
+    _, cell_lines = get_surface_mesh(cell_disc_mesh.cells[0].data)
+    connected_lines = np.sum(np.isin(cell_lines, connected_nodes), axis=1)==2
+    connected_lines = connected_lines.astype(int)
+    cell_connected_nodes = np.zeros(len(cell_disc_mesh.points), dtype=int)
+    cell_connected_nodes[connected_nodes ] = 1
+    cell_connected_nodes[map_new_nodes[connected_nodes]] = 1
+
+    line_mesh = io.Mesh(cell_disc_mesh.points, {'line': cell_lines},
+                        cell_data = {'connected': [connected_lines]},
+                        point_data={'connected': cell_connected_nodes})
+
+    return line_mesh

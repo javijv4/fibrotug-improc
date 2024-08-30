@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import meshio as io
 from skimage import io as skio
 
-tissue_fldr = '../DSP/Tissues/dataset2/gem03/'
+tissue_fldr = '../DSP/Tissues/dataset2/gem02/'
 png_dump = tissue_fldr + 'png_dump/'
 exp_fldr = tissue_fldr + 'exp/'
 mesh_fldr = tissue_fldr + 'mesh/'
@@ -59,7 +59,9 @@ dspexp.plot_images(which=['dsp', 'dsp_density'])
 plt.savefig(png_dump + 'dsp.png')
 dspexp.save_images(exp_fldr)
 
-mesh = dspexp.generate_mesh(downsample=downsample, meshsize=meshsize, pixel_size=pixel_size)
+mesh = dspexp.generate_mesh(downsample=downsample, meshsize=meshsize, pixel_size=pixel_size,
+                            use_fiber_mask=True)
+io.write('mesh.vtu', mesh)
 io.write(mesh_fldr + 'mesh.vtu', mesh)
 
 

@@ -18,7 +18,7 @@ import improcessing.actin as actproc
 import improcessing.dsp as dspproc
 from imregistration.ITKTransform import elastix_simple_transformation, apply_transform
 from imregistration.utils import rotate_interactive, crop_interactive, normalize_image
-from img2mesh import mask2mesh
+from img2mesh import mask2mesh, mask2mesh_with_fibers, create_submesh, find_boundary
 
 
 
@@ -59,7 +59,7 @@ class DSPProtocolTissue:
         self.post_images = {}
 
 
-    def generate_mesh(self, downsample=10, meshsize=5, pixel_size=0.390*1e-3):
+    def generate_mesh(self, downsample=10, meshsize=5, pixel_size=0.390*1e-3, use_fiber_mask=False):
         if self.fixed_image == 'pre':
             tissue_mask = self.pre_images['tissue_mask']
         else:
@@ -68,7 +68,11 @@ class DSPProtocolTissue:
         self.mesh_tissue_mask = tissue_mask
 
         # Generate mesh and grab node coordinates
-        mesh = mask2mesh(tissue_mask, downsample, meshsize)
+        if use_fiber_mask:
+            fiber_mask = self.pre_images['fiber_mask']
+            mesh, elem_fiber_mask, fiber_mesh = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize)
+        else:
+            mesh = mask2mesh(tissue_mask, downsample, meshsize)
         ij_nodes = np.floor(mesh.points).astype(int)
 
         # Project data to mesh
@@ -82,6 +86,7 @@ class DSPProtocolTissue:
                 mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
             else:
                 mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+
 
         # Calculate fiber and myofibril vectors
         pre_fiber_vector = np.array([np.cos(mesh.point_data['pre_fiber_angle']), np.sin(mesh.point_data['pre_fiber_angle'])]).T
@@ -97,7 +102,12 @@ class DSPProtocolTissue:
         # Fiber density to elements
         midpoints = np.mean(mesh.points[mesh.cells[0].data], axis=1)
         ij_midnodes = np.floor(midpoints).astype(int)
-        pre_elem_fib_rho = self.pre_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+
+        # Remove any fiber density outside the fiber mask
+        if use_fiber_mask:
+            pre_elem_fib_rho = elem_fiber_mask
+        else:
+            pre_elem_fib_rho = self.pre_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
         mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
         post_elem_fib_rho = self.post_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
         mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
@@ -106,31 +116,10 @@ class DSPProtocolTissue:
         mesh.points = mesh.points * pixel_size
 
         # Find boundary
-        xyz = mesh.points
-        ien = mesh.cells[0].data
-        minx = np.min(mesh.points[:,0])
-        maxx = np.max(mesh.points[:,0])
-
-        bndry = []
-        for i in range(len(ien)):
-            vertex = xyz[ien[i]]
-            k = np.where(np.isclose(vertex[:,0], minx))[0]
-            j = np.where(np.isclose(vertex[:,0], maxx))[0]
-
-            if len(k) == 0 and len(j) == 0:
-                continue
-
-            if len(k) == 2:
-                v = ien[i, k]
-                id_value = 1
-            elif len(j) == 2:
-                v = ien[i, j]
-                id_value = 2
-            else:
-                continue
-
-            bndry.append(np.array([i, v[0], v[1], id_value]))
-        bdata = np.vstack(bndry).astype(int)
+        bdata = find_boundary(mesh)
+        if use_fiber_mask:
+            fiber_mesh.points = fiber_mesh.points * pixel_size
+            fiber_bdata = find_boundary(fiber_mesh)
 
         # Compute width at boundary
         nodes_b1 = np.unique(bdata[bdata[:,-1]==1, 1:-1])
@@ -142,6 +131,10 @@ class DSPProtocolTissue:
         # Save mesh
         chio.write_mesh(self.mesh_folder + 'tissue', mesh.points, mesh.cells[0].data)
         chio.write_bfile(self.mesh_folder + 'tissue', bdata)
+
+        if use_fiber_mask:
+            chio.write_mesh(self.mesh_folder + 'fiber', fiber_mesh.points, fiber_mesh.cells[0].data)
+            chio.write_bfile(self.mesh_folder + 'fiber', fiber_bdata)
 
         # Save data points
         for field in  mesh.point_data:
@@ -298,15 +291,23 @@ class DSPProtocolTissue:
         tissue_mask = normalize_image(warped_img, binary=True)
 
         for name in tissue.images.keys():
-            if 'mask' in name: continue
 
             img = tissue.images[name]
             if img is None:
                 continue
+            if 'mask' in name:
+                print(name)
+                if img.dtype == bool:
+                    img = img.astype(int)
+                else:
+                    img = normalize_image(img)
+                    img = img > 0.5
+                    img = img.astype(int)
 
             # Normalize data
             vmin = img.min()
             vmax = img.max()
+
             img = normalize_image(img)
 
             # warp
@@ -315,13 +316,18 @@ class DSPProtocolTissue:
 
             warped_img = warped_img*(vmax-vmin) + vmin
 
-
             # rotate and crop
             warped_img = self.rotate_and_crop(warped_img)
 
             # Apply secondary warping
             if secondary_warping is not None:
                 warped_img = self.apply_secondary_warping(warped_img, secondary_warping)
+
+
+            if 'mask' in name:
+                img = normalize_image(img)
+                img = img > 0.5
+                img = img.astype(int)
 
             dict_images[name] = warped_img
 
@@ -338,18 +344,31 @@ class DSPProtocolTissue:
 
 
         for name in tissue.images.keys():
-            if 'mask' in name: continue
+            # if 'mask' in name: continue
             img = tissue.images[name]
             if img is None:
                 continue
+            if 'mask' in name:
+                if img.dtype == bool:
+                    img = img.astype(int)
+                else:
+                    img = normalize_image(img)
+                    img = img > 0.5
+                    img = img.astype(int)
 
             # Normalize data
             vmin = img.min()
             vmax = img.max()
+
             img = normalize_image(img)
 
             img = self.rotate_and_crop(img)
             img = img*(vmax-vmin) + vmin
+
+            if 'mask' in name:
+                img = normalize_image(img)
+                img = img > 0.5
+                img = img.astype(int)
 
             dict_images[name] = img
 
@@ -426,6 +445,7 @@ class DSPProtocolTissue:
 
     def save_images(self, folder):
         for name in self.pre_images.keys():
+            print(name)
             image = self.pre_images[name]
             if 'mask' in name:
                 image = image.astype(np.uint8)
@@ -465,7 +485,7 @@ class FtugTissue:
         self.images = {'fibers': self.fiber_image, 'actin': self.actin_image, 'dsp': self.dsp_image, 'dapi': self.dapi_image}
 
 
-    def get_tissue_mask(self, force_compute=False):
+    def get_tissue_mask(self, tissue_mask_type='both', force_compute=False):
         if not force_compute:
             try:
                 self.tissue_mask = io.imread(self.tissue_fldr + '/tissue_mask.tif')
@@ -477,11 +497,20 @@ class FtugTissue:
 
         print('Computing tissue mask')
         tissue_mask_from_fibers = self.get_tissue_mask_from_image(self.fiber_image)
-        if self.actin_image is not None:
-            tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
-            tissue_mask = tissue_mask_from_actin + tissue_mask_from_fibers
-        else:
+        if tissue_mask_type == 'both':
+            if self.actin_image is not None:
+                tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
+                tissue_mask = tissue_mask_from_actin + tissue_mask_from_fibers
+            else:
+                if self.actin_image is not None:
+                    tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
+                else:
+                    raise ValueError('Actin image is required')
+        elif tissue_mask_type == 'fibers':
             tissue_mask = tissue_mask_from_fibers
+            tissue_mask = morphology.binary_opening(tissue_mask, morphology.disk(15))
+        elif tissue_mask_type == 'actin':
+            tissue_mask = tissue_mask_from_actin
         self.tissue_mask = tissue_mask
         io.imsave(self.tissue_fldr + '/tissue_mask_init.tif', tissue_mask.astype(np.int8), check_contrast=False)
         self.images['tissue_mask'] = self.tissue_mask

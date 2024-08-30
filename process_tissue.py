@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 from glob import glob
 
 
-samples = ['gem03']
-days = ['day9']
+samples = ['gem02']
+days = ['day7']
 # samples = ['gem03']
 # days = ['day7']
 
@@ -41,7 +41,7 @@ for sample in samples:
         # Actinin processing
         tissue.get_actin_blob_mask()
         tissue.get_actin_mask()
-        tissue.process_actin(force_compute=True)
+        tissue.process_actin()
         tissue.plot_actin_processing(png_dump)
         tissue.create_cell_mask()
 
