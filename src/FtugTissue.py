@@ -12,13 +12,13 @@ from glob import glob
 from matplotlib import pyplot as plt
 import numpy as np
 import cheartio as chio
-from skimage import io, filters, morphology, measure, exposure, transform
+from skimage import io, filters, morphology, measure, exposure, transform, img_as_uint
 import improcessing.fibers as fibproc
 import improcessing.actin as actproc
 import improcessing.dsp as dspproc
 from imregistration.ITKTransform import elastix_simple_transformation, apply_transform
 from imregistration.utils import rotate_interactive, crop_interactive, normalize_image
-from img2mesh import mask2mesh, mask2mesh_with_fibers, create_submesh, find_boundary
+from img2mesh import mask2mesh, mask2mesh_with_fibers, mask2mesh_only_fibers, find_boundary
 
 
 
@@ -59,7 +59,7 @@ class DSPProtocolTissue:
         self.post_images = {}
 
 
-    def generate_mesh(self, downsample=10, meshsize=5, pixel_size=0.390*1e-3, use_fiber_mask=False):
+    def generate_tissue_mesh(self, meshsize=5, pixel_size=0.390*1e-3, use_fiber_mask=False):
         if self.fixed_image == 'pre':
             tissue_mask = self.pre_images['tissue_mask']
         else:
@@ -70,9 +70,164 @@ class DSPProtocolTissue:
         # Generate mesh and grab node coordinates
         if use_fiber_mask:
             fiber_mask = self.pre_images['fiber_mask']
-            mesh, elem_fiber_mask, fiber_mesh = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize)
+            mesh, elem_fiber_mask, _ = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize)
         else:
-            mesh = mask2mesh(tissue_mask, downsample, meshsize)
+            fiber_mask = np.zeros_like(tissue_mask)
+            mesh, elem_fiber_mask, _ = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize)
+            # mesh = mask2mesh(tissue_mask, meshsize)
+        print(np.min(mesh.points,axis=0), np.max(mesh.points,axis=0))
+        ij_nodes = np.floor(mesh.points).astype(int)
+
+        # Project data to mesh
+        for field in self.pre_images.keys():
+            if 'mask' in field:
+                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+        for field in self.post_images.keys():
+            if 'mask' in field:
+                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+
+
+        # Calculate fiber and myofibril vectors
+        pre_actin_vector = np.array([np.cos(mesh.point_data['pre_actin_angle']), np.sin(mesh.point_data['pre_actin_angle'])]).T
+        post_actin_vector = np.array([np.cos(mesh.point_data['post_actin_angle']), np.sin(mesh.point_data['post_actin_angle'])]).T
+
+        mesh.point_data['pre_actin_vector'] = np.hstack([pre_actin_vector, np.zeros((pre_actin_vector.shape[0], 1))])
+        mesh.point_data['post_actin_vector'] = np.hstack([post_actin_vector, np.zeros((post_actin_vector.shape[0], 1))])
+
+        # Fiber density to elements
+        midpoints = np.mean(mesh.points[mesh.cells[0].data], axis=1)
+        ij_midnodes = np.floor(midpoints).astype(int)
+
+        # Remove any fiber density outside the fiber mask
+        if use_fiber_mask:
+            pre_elem_fib_rho = elem_fiber_mask
+        else:
+            pre_elem_fib_rho = self.pre_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+        mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
+        post_elem_fib_rho = self.post_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+        mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
+
+        # Adjust to real dimensions
+        mesh.points = mesh.points * pixel_size
+
+        # Find boundary
+        bdata = find_boundary(mesh)
+
+        # Compute width at boundary
+        nodes_b1 = np.unique(bdata[bdata[:,-1]==1, 1:-1])
+        nodes_b2 = np.unique(bdata[bdata[:,-1]==2, 1:-1])
+
+        w1 = np.max(mesh.points[nodes_b1,1]) - np.min(mesh.points[nodes_b1,1])
+        w2 = np.max(mesh.points[nodes_b2,1]) - np.min(mesh.points[nodes_b2,1])
+
+        # Save mesh
+        chio.write_mesh(self.mesh_folder + 'tissue', mesh.points, mesh.cells[0].data)
+        chio.write_bfile(self.mesh_folder + 'tissue', bdata)
+
+        # Save data points
+        for field in  mesh.point_data:
+            if 'vector' in field:
+                aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
+                save = np.hstack([mesh.point_data[field][:,0:2], aux])
+                chio.write_dfile(self.data_folder + field + '.FE', save)
+            else:
+                chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
+        for field in  mesh.cell_data:
+            chio.write_dfile(self.data_folder + field + '.FE', mesh.cell_data[field][0])
+
+        chio.write_dfile(self.data_folder + 'w1.FE', np.array([w1]))
+        chio.write_dfile(self.data_folder + 'w2.FE', np.array([w2]))
+
+        self.mesh = mesh
+        return mesh
+    
+    def generate_fiber_mesh(self, tissue_mesh, meshsize=3, pixel_size=0.390*1e-3):
+        if self.fixed_image == 'pre':
+            tissue_mask = self.pre_images['tissue_mask']
+        else:
+            tissue_mask = self.post_images['tissue_mask']
+
+        self.mesh_tissue_mask = tissue_mask
+
+        # Generate mesh and grab node coordinates
+        fiber_mask = self.pre_images['fiber_mask']
+        mesh = mask2mesh_only_fibers(tissue_mask, fiber_mask, meshsize=meshsize, subdivide_fibers=True)
+        print(np.min(mesh.points,axis=0), np.max(mesh.points,axis=0))
+        ij_nodes = np.floor(mesh.points).astype(int)
+
+        # Project data to mesh
+        for field in self.pre_images.keys():
+            if 'mask' in field:
+                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+        for field in self.post_images.keys():
+            if 'mask' in field:
+                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+
+
+        # Calculate fiber and myofibril vectors
+        pre_fiber_vector = np.array([np.cos(mesh.point_data['pre_fiber_angle']), np.sin(mesh.point_data['pre_fiber_angle'])]).T
+        post_fiber_vector = np.array([np.cos(mesh.point_data['post_fiber_angle']), np.sin(mesh.point_data['post_fiber_angle'])]).T
+
+        mesh.point_data['pre_fiber_vector'] = np.hstack([pre_fiber_vector, np.zeros((pre_fiber_vector.shape[0], 1))])
+        mesh.point_data['post_fiber_vector'] = np.hstack([post_fiber_vector, np.zeros((post_fiber_vector.shape[0], 1))])
+
+        # Fiber density to elements
+        midpoints = np.mean(mesh.points[mesh.cells[0].data], axis=1)
+        ij_midnodes = np.floor(midpoints).astype(int)
+
+        # Remove any fiber density outside the fiber mask
+        pre_elem_fib_rho = np.ones(mesh.cells[0].data.shape[0])
+        mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
+        post_elem_fib_rho = self.post_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+        mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
+
+        # Adjust to real dimensions
+        mesh.points = mesh.points * pixel_size
+
+        # Find boundary
+        bdata = find_boundary(mesh)
+
+        # Save mesh
+        chio.write_mesh(self.mesh_folder + 'fiber', mesh.points, mesh.cells[0].data)
+        chio.write_bfile(self.mesh_folder + 'fiber', bdata)
+
+        # Save data points
+        for field in  mesh.point_data:
+            if 'vector' in field:
+                aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
+                save = np.hstack([mesh.point_data[field][:,0:2], aux])
+                chio.write_dfile(self.data_folder + field + '.FE', save)
+            else:
+                chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
+        for field in  mesh.cell_data:
+            chio.write_dfile(self.data_folder + field + '.FE', mesh.cell_data[field][0])
+
+        self.mesh = mesh
+        return mesh
+
+
+    def generate_mesh(self, meshsize=5, pixel_size=0.390*1e-3, use_fiber_mask=False, add_posts=False, subdivide_fibers=False):
+        if self.fixed_image == 'pre':
+            tissue_mask = self.pre_images['tissue_mask']
+        else:
+            tissue_mask = self.post_images['tissue_mask']
+
+        self.mesh_tissue_mask = tissue_mask
+
+        # Generate mesh and grab node coordinates
+        if use_fiber_mask:
+            fiber_mask = self.pre_images['fiber_mask']
+            mesh, elem_fiber_mask, fiber_mesh = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize, add_posts=add_posts, subdivide_fibers=subdivide_fibers)
+        else:
+            mesh = mask2mesh(tissue_mask, meshsize)
         ij_nodes = np.floor(mesh.points).astype(int)
 
         # Project data to mesh
@@ -296,7 +451,6 @@ class DSPProtocolTissue:
             if img is None:
                 continue
             if 'mask' in name:
-                print(name)
                 if img.dtype == bool:
                     img = img.astype(int)
                 else:
@@ -445,16 +599,23 @@ class DSPProtocolTissue:
 
     def save_images(self, folder):
         for name in self.pre_images.keys():
-            print(name)
             image = self.pre_images[name]
             if 'mask' in name:
                 image = image.astype(np.uint8)
-            io.imsave(folder + 'pre_' + name + '.tif', image, check_contrast=False)
+                io.imsave(folder + 'pre_' + name + '.tif', image, check_contrast=False)
+            elif ('density' in name) or ('angle' in name) or ('dispersion' in name):
+                io.imsave(folder + 'pre_' + name + '.tif', image, check_contrast=False)
+            else:
+                io.imsave(folder + 'pre_' + name + '.tif', img_as_uint(image), check_contrast=False)
         for name in self.post_images.keys():
             image = self.post_images[name]
             if 'mask' in name:
                 image = image.astype(np.uint8)
-            io.imsave(folder + 'post_' + name + '.tif', image, check_contrast=False)
+                io.imsave(folder + 'post_' + name + '.tif', image, check_contrast=False)
+            elif ('density' in name) or ('angle' in name) or ('dispersion' in name):
+                io.imsave(folder + 'post_' + name + '.tif', image, check_contrast=False)
+            else:
+                io.imsave(folder + 'post_' + name + '.tif', img_as_uint(image), check_contrast=False)
 
 
 class FtugTissue:
