@@ -66,7 +66,6 @@ def mask2mesh(mask, meshsize=3, add_post=False):
     points = mesh.points[:,0:2]
     tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
     xyz = tri_mesh.points
-    print(np.min(xyz[:,0]), np.max(xyz[:,0]))
 
     return tri_mesh
 

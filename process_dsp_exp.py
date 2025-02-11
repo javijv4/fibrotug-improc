@@ -19,8 +19,7 @@ exp_fldr = tissue_fldr + 'exp/'
 mesh_fldr = tissue_fldr + 'mesh/'
 data_fldr = tissue_fldr + 'data/'
 
-downsample = 10
-meshsize = 10
+meshsize = 5
 pixel_size = 0.390*1e-3  #mm
 
 pre_fldr = tissue_fldr + 'day7/'
@@ -70,5 +69,5 @@ dspexp.save_images(exp_fldr)
 tissue_mesh = dspexp.generate_tissue_mesh(meshsize=meshsize, pixel_size=pixel_size,
                                     use_fiber_mask=False)
 io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
-fiber_mesh = dspexp.generate_fiber_mesh(tissue_mesh, meshsize=meshsize, pixel_size=pixel_size)
+fiber_mesh = dspexp.generate_fiber_mesh(tissue_mesh, meshsize=meshsize*2, pixel_size=pixel_size)
 io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)
