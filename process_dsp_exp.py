@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import meshio as io
 from skimage import io as skio
 
-tissue_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/three-phase-model2/tissue_data/'
+tissue_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Tissues/dataset2_2/gem02/'
 png_dump = tissue_fldr + 'png_dump/'
 exp_fldr = tissue_fldr + 'exp/'
 mesh_fldr = tissue_fldr + 'mesh/'
@@ -22,11 +22,11 @@ data_fldr = tissue_fldr + 'data/'
 meshsize = 5
 pixel_size = 0.390*1e-3  #mm
 
-pre_fldr = tissue_fldr + 'day7/'
+pre_fldr = tissue_fldr + 'pre/'
 pre_images = find_images(pre_fldr)
 
 
-post_fldr = tissue_fldr + 'day9/'
+post_fldr = tissue_fldr + 'post/'
 post_images = find_images(post_fldr)
 
 
@@ -59,15 +59,15 @@ plt.savefig(png_dump + 'dsp.png')
 dspexp.save_images(exp_fldr)
 
 
-# # One mesh
-# mesh = dspexp.generate_mesh(meshsize=meshsize, pixel_size=pixel_size,
-#                             use_fiber_mask=True, subdivide_fibers=False)
-# io.write('mesh.vtu', mesh)
-# io.write(mesh_fldr + 'mesh.vtu', mesh)
+# One mesh
+mesh = dspexp.generate_mesh(meshsize=meshsize, pixel_size=pixel_size,
+                            use_fiber_mask=True, subdivide_fibers=False)
+io.write('mesh.vtu', mesh)
+io.write(mesh_fldr + 'mesh.vtu', mesh)
 
 # Separated tissue and fiber meshes
-tissue_mesh = dspexp.generate_tissue_mesh(meshsize=meshsize, pixel_size=pixel_size,
-                                    use_fiber_mask=False)
-io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
-fiber_mesh = dspexp.generate_fiber_mesh(tissue_mesh, meshsize=meshsize*2, pixel_size=pixel_size)
-io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)
+# tissue_mesh = dspexp.generate_tissue_mesh(meshsize=meshsize, pixel_size=pixel_size,
+#                                     use_fiber_mask=False)
+# io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
+# fiber_mesh = dspexp.generate_fiber_mesh(meshsize=meshsize*2, pixel_size=pixel_size)
+# io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)

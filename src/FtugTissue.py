@@ -129,15 +129,24 @@ class DSPProtocolTissue:
         chio.write_bfile(self.mesh_folder + 'tissue', bdata)
 
         # Save data points
+        print('Saving tissue data...')
         for field in  mesh.point_data:
+            name = field
+            if 'fiber' in field:
+                name = name + '_t'
+            print(field)
             if 'vector' in field:
                 aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
                 save = np.hstack([mesh.point_data[field][:,0:2], aux])
-                chio.write_dfile(self.data_folder + field + '.FE', save)
+                chio.write_dfile(self.data_folder + name + '.FE', save)
             else:
-                chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
+                chio.write_dfile(self.data_folder + name + '.FE', mesh.point_data[field])
         for field in  mesh.cell_data:
-            chio.write_dfile(self.data_folder + field + '.FE', mesh.cell_data[field][0])
+            name = field
+            if 'fiber' in field:
+                name = name + '_t'
+            print(field)
+            chio.write_dfile(self.data_folder + name + '.FE', mesh.cell_data[field][0])
 
         chio.write_dfile(self.data_folder + 'w1.FE', np.array([w1]))
         chio.write_dfile(self.data_folder + 'w2.FE', np.array([w2]))
@@ -145,7 +154,7 @@ class DSPProtocolTissue:
         self.mesh = mesh
         return mesh
     
-    def generate_fiber_mesh(self, tissue_mesh, meshsize=3, pixel_size=0.390*1e-3):
+    def generate_fiber_mesh(self, meshsize=3, pixel_size=0.390*1e-3):
         if self.fixed_image == 'pre':
             tissue_mask = self.pre_images['tissue_mask']
         else:
@@ -156,7 +165,6 @@ class DSPProtocolTissue:
         # Generate mesh and grab node coordinates
         fiber_mask = self.pre_images['fiber_mask']
         mesh = mask2mesh_only_fibers(tissue_mask, fiber_mask, meshsize=meshsize, subdivide_fibers=True)
-        print(np.min(mesh.points,axis=0), np.max(mesh.points,axis=0))
         ij_nodes = np.floor(mesh.points).astype(int)
 
         # Project data to mesh
@@ -200,7 +208,11 @@ class DSPProtocolTissue:
         chio.write_bfile(self.mesh_folder + 'fiber', bdata)
 
         # Save data points
+        print('Saving fiber data...')
         for field in  mesh.point_data:
+            if 'fiber' not in field:
+                continue
+            print(field)
             if 'vector' in field:
                 aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
                 save = np.hstack([mesh.point_data[field][:,0:2], aux])
@@ -636,12 +648,11 @@ class FtugTissue:
         if 'dapi' in images:
             self.dapi_image = io.imread(tissue_fldr + images['dapi'])
 
-        if self.fiber_image is None:
-            raise ValueError('Fiber image is required')
+        # if self.fiber_image is None:
+        #     raise ValueError('Fiber image is required')
 
         self.tissue_mask = None
         self.fiber_mask = None
-
 
         self.images = {'fibers': self.fiber_image, 'actin': self.actin_image, 'dsp': self.dsp_image, 'dapi': self.dapi_image}
 
@@ -656,22 +667,28 @@ class FtugTissue:
             except:
                 pass
 
-        print('Computing tissue mask')
-        tissue_mask_from_fibers = self.get_tissue_mask_from_image(self.fiber_image)
+        print('Computing tissue mask')        
         if tissue_mask_type == 'both':
-            if self.actin_image is not None:
-                tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
-                tissue_mask = tissue_mask_from_actin + tissue_mask_from_fibers
-            else:
-                if self.actin_image is not None:
-                    tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
-                else:
-                    raise ValueError('Actin image is required')
+            if self.fiber_image is None:
+                raise ValueError('Fiber image is required')
+            if self.actin_image is None:    
+                raise ValueError('Actin image is required')
+    
+            tissue_mask_from_actin = self.get_tissue_mask_from_image(self.actin_image)
+            tissue_mask_from_fibers = self.get_tissue_mask_from_image(self.fiber_image)
+            tissue_mask = tissue_mask_from_actin + tissue_mask_from_fibers
+            
         elif tissue_mask_type == 'fibers':
-            tissue_mask = tissue_mask_from_fibers
+            if self.fiber_image is None:
+                raise ValueError('Fiber image is required')
+            tissue_mask = self.get_tissue_mask_from_image(self.fiber_image)
             tissue_mask = morphology.binary_opening(tissue_mask, morphology.disk(15))
+
         elif tissue_mask_type == 'actin':
-            tissue_mask = tissue_mask_from_actin
+            if self.actin_image is None:    
+                raise ValueError('Actin image is required')
+            tissue_mask = self.get_tissue_mask_from_image(self.actin_image)
+
         self.tissue_mask = tissue_mask
         io.imsave(self.tissue_fldr + '/tissue_mask_init.tif', tissue_mask.astype(np.int8), check_contrast=False)
         self.images['tissue_mask'] = self.tissue_mask
@@ -1013,25 +1030,31 @@ class FtugTissue:
     """
 
     def plot_images(self, folder):
-        plt.figure(1, clear=True)
-        plt.imshow(self.fiber_image, cmap='gray')
-        plt.axis('off')
-        plt.savefig(folder + 'fiber.png', bbox_inches='tight')
+        if self.fiber_image is not None:
+            plt.figure(1, clear=True)
+            plt.imshow(self.fiber_image, cmap='gray')
+            plt.axis('off')
+            plt.savefig(folder + 'fiber.png', bbox_inches='tight')
 
-        plt.figure(1, clear=True)
-        plt.imshow(self.actin_image, cmap='gray')
-        plt.axis('off')
-        plt.savefig(folder + 'actin.png', bbox_inches='tight')
+        if self.actin_image is not None:
+            plt.figure(1, clear=True)
+            plt.imshow(self.actin_image, cmap='gray')
+            plt.axis('off')
+            plt.savefig(folder + 'actin.png', bbox_inches='tight')
 
-        plt.figure(1, clear=True)
-        plt.imshow(self.dsp_image, cmap='gray')
-        plt.axis('off')
-        plt.savefig(folder + 'dsp.png', bbox_inches='tight')
+        if self.dsp_image is not None:
+            plt.figure(1, clear=True)
+            plt.imshow(self.dsp_image, cmap='gray')
+            plt.axis('off')
+            plt.savefig(folder + 'dsp.png', bbox_inches='tight')
 
 
     def plot_tissue_mask(self, folder):
         plt.figure(1, clear=True)
-        plt.imshow(self.fiber_image, cmap='gray')
+        if self.fiber_image is not None:
+            plt.imshow(self.fiber_image, cmap='gray')
+        else:
+            plt.imshow(self.actin_image, cmap='gray')
         plt.imshow(self.tissue_mask, alpha=0.5, cmap='RdBu')
         plt.axis('off')
         plt.savefig(folder + 'tissue_mask.png', bbox_inches='tight')
@@ -1133,28 +1156,46 @@ class FtugTissue:
 
 
 
-def find_images(tissue_fldr, load=False):
+def find_images(tissue_fldr, dataset=2, load=False):
     images = {}
     tif_files = glob(tissue_fldr + '*.tif')
     for tif_file in tif_files:
-        if 'day7' in tissue_fldr:
-            if 'c1+2+3' in tif_file:
-                continue
-            elif 'c1' in tif_file:
-                images['dsp'] = os.path.basename(tif_file)
-            elif 'c2' in tif_file:
-                images['fibers'] = os.path.basename(tif_file)
-            elif 'c3' in tif_file:
-                images['actin'] = os.path.basename(tif_file)
-        elif 'day9' in tissue_fldr:
-            if 'c1+2+3' in tif_file:
-                continue
-            elif 'c2' in tif_file:
-                images['dsp'] = os.path.basename(tif_file)
-            elif 'c3' in tif_file:
-                images['fibers'] = os.path.basename(tif_file)
-            elif 'c4' in tif_file:
-                images['actin'] = os.path.basename(tif_file)
+        if dataset == 1:
+            if ('day7' in tissue_fldr) or ('pre' in tissue_fldr):
+                if 'c1+2+3' in tif_file:
+                    continue
+                elif 'c1' in tif_file:
+                    images['dsp'] = os.path.basename(tif_file)
+                elif 'c2' in tif_file:
+                    images['actin'] = os.path.basename(tif_file)
+            elif ('day9' in tissue_fldr) or ('post' in tissue_fldr):
+                if 'c1+2+3' in tif_file:
+                    continue
+                elif 'c2' in tif_file:
+                    images['dsp'] = os.path.basename(tif_file)
+                elif 'c3' in tif_file:
+                    images['fibers'] = os.path.basename(tif_file)
+                elif 'c4' in tif_file:
+                    images['actin'] = os.path.basename(tif_file)
+        elif dataset == 2:
+            if ('day7' in tissue_fldr) or ('pre' in tissue_fldr):
+                if 'c1+2+3' in tif_file:
+                    continue
+                elif 'c1' in tif_file:
+                    images['dsp'] = os.path.basename(tif_file)
+                elif 'c2' in tif_file:
+                    images['fibers'] = os.path.basename(tif_file)
+                elif 'c3' in tif_file:
+                    images['actin'] = os.path.basename(tif_file)
+            elif ('day9' in tissue_fldr) or ('post' in tissue_fldr):
+                if 'c1+2+3' in tif_file:
+                    continue
+                elif 'c2' in tif_file:
+                    images['dsp'] = os.path.basename(tif_file)
+                elif 'c3' in tif_file:
+                    images['fibers'] = os.path.basename(tif_file)
+                elif 'c4' in tif_file:
+                    images['actin'] = os.path.basename(tif_file)
 
     if load:
         for key in images.keys():

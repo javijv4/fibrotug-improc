@@ -432,10 +432,10 @@ def subdivide_mesh_fibers(mesh, elem_fiber_mask, bfaces):
     mesh, interface_nodes = subdivide_mesh_smart(mesh, elem_fiber_mask) 
     io.write('check2.vtu', mesh)
 
-    # Then we optimize the mesh
-    print('Optimizing mesh')
-    mesh = optimize_mesh(mesh, interface_nodes, bfaces)
-    io.write('check3.vtu', mesh)
+    # # Then we optimize the mesh
+    # print('Optimizing mesh')
+    # mesh = optimize_mesh(mesh, interface_nodes, bfaces)
+    # io.write('check3.vtu', mesh)
 
     return mesh
     
@@ -761,7 +761,7 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     ien = fiber_mesh.cells_dict['triangle']
 
     elem_fiber_mask = np.ones(len(fiber_mesh.cells[0].data), dtype=int)
-    _, bfaces = get_surface_mesh(fiber_mesh)
+    belems, bfaces = get_surface_mesh(fiber_mesh)
 
     # Getting boundaries to fix bad elements
     print('Deleting bad elements on the boundaries')
@@ -782,7 +782,9 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     xyz = xyz/rescale
 
     # Check if bad elements only have one neighbor
-    xyz, ien = fix_quality_one_neigh_elems(xyz, ien)
+    fiber_mesh = io.Mesh(xyz, {'triangle': ien})
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+    xyz, ien = fix_quality_one_neigh_elems(xyz, ien, belems)
 
     tri_mesh = io.Mesh(xyz, {'triangle': ien})
     _, bfaces = get_surface_mesh(tri_mesh)
@@ -858,6 +860,10 @@ def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
 
     to_fix = np.where(quality > 10)[0]
 
+    x0 = np.min(xyz[:,0])
+    xl = np.max(xyz[:,0])
+    tol = (xl-x0)/2000
+
     elem_del = []
     for i in to_fix:
         nodes = ien[i]
@@ -894,6 +900,9 @@ def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
                 ien[ien>del_node] -= 1
                 xyz = np.delete(xyz, [del_node], axis=0)
                 elem_del.append(i)
+
+            xyz[xyz[:,0] < tol] = x0
+            xyz[xyz[:,0] > xl-tol,0] = xl
         else:
             print(i)
 
@@ -903,10 +912,13 @@ def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
     return xyz, ien, elem_fiber_mask, len(elem_del)
 
 
-def fix_quality_one_neigh_elems(xyz, ien):
+def fix_quality_one_neigh_elems(xyz, ien, belems):
     quality = tri_quality_radius_ratio(np.column_stack((xyz, np.zeros(len(xyz)))), ien)
     
     bad_elems = np.where(quality > 5)[0]
+
+    list_bdry = np.zeros(len(ien), dtype=bool)
+    list_bdry[belems] = True
 
     elem_del = [1,2]
     while len(elem_del) > 0:
@@ -921,9 +933,12 @@ def fix_quality_one_neigh_elems(xyz, ien):
         one_neigh_elems = np.where(elem_neigh_count == 1)[0]
 
         elem_del = np.intersect1d(bad_elems, one_neigh_elems)
+        elem_del = np.setdiff1d(elem_del, belems)
 
         ien = np.delete(ien, elem_del, axis=0)
         quality = np.delete(quality, elem_del)
+        list_bdry = np.delete(list_bdry, elem_del, axis=0)
+        belems = np.where(list_bdry)[0]
 
     return xyz, ien
 

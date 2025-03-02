@@ -14,39 +14,55 @@ from glob import glob
 
 
 samples = ['gem02']
-days = ['day7']
+days = ['pre', 'post']
 # samples = ['gem03']
 # days = ['day7']
 
-# for sample in samples:
-path = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/three-phase-model2/tissue_data/'
-for day in days:
-    tissue_fldr = f'{path}/{day}/'
-    png_dump = tissue_fldr + 'png_dump/'
-    if not os.path.exists(png_dump):
-        os.makedirs(png_dump)
+path = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2_2/'
+samples = os.listdir(path)
+samples = [sample for sample in samples if os.path.isdir(path + sample)]
+samples = sorted(samples)
+samples = ['gem02']
+for sample in samples:
+    for day in days:
+        tissue_fldr = f'{path}/{sample}/{day}/'
+        if os.path.exists(f'{tissue_fldr}/improc_dsp.npz'):
+            continue
 
-    images = find_images(tissue_fldr)
+        print(f'Processing {sample} {day}')
+    
+        # try: 
+        png_dump = tissue_fldr + 'png_dump/'
+        if not os.path.exists(png_dump):
+            os.makedirs(png_dump)
 
-    tissue = FtugTissue(tissue_fldr, images)
-    tissue.plot_images(png_dump)
+        images = find_images(tissue_fldr, dataset=1)
 
-    tissue.get_tissue_mask()
-    tissue.plot_tissue_mask(png_dump)
+        tissue = FtugTissue(tissue_fldr, images)
+        tissue.plot_images(png_dump)
 
-    # Fiber processing
-    tissue.get_fiber_mask()
-    tissue.process_fibers()
-    tissue.plot_fiber_processing(png_dump)
+        tissue.get_tissue_mask(tissue_mask_type='actin')
+        tissue.plot_tissue_mask(png_dump)
 
-    # Actinin processing
-    tissue.get_actin_blob_mask()
-    tissue.get_actin_mask()
-    tissue.process_actin()
-    tissue.plot_actin_processing(png_dump)
-    tissue.create_cell_mask()
+        # Fiber processing
+        if 'fiber' in images:
+            tissue.get_fiber_mask()
+            tissue.process_fibers()
+            tissue.plot_fiber_processing(png_dump)
 
-    # DSP processing
-    tissue.process_dsp(method='window', mask_method=1)
-    tissue.plot_dsp_processing(png_dump)
-    tissue.plot_dsp_processing_zoom(png_dump, [740, 840, 140, 240])
+        # Actinin processing
+        if 'actin' in images:
+            tissue.get_actin_blob_mask()
+            tissue.get_actin_mask()
+            tissue.process_actin()
+            tissue.plot_actin_processing(png_dump)
+            tissue.create_cell_mask()
+
+        # DSP processing
+        if 'dsp' in images:
+            tissue.process_dsp(method='window', mask_method=1)
+            tissue.plot_dsp_processing(png_dump)
+            tissue.plot_dsp_processing_zoom(png_dump, [740, 840, 140, 240])
+        # except:
+        #     print(f'Error processing {sample} {day}')
+        #     continue
