@@ -13,6 +13,8 @@ import cv2
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d, PchipInterpolator
 from scipy.signal import find_peaks
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import butter, filtfilt, windows
 
 def estimate_tissue_rectangle(img, plot=False):
 
@@ -24,6 +26,7 @@ def estimate_tissue_rectangle(img, plot=False):
         thresh = filters.threshold_otsu(img)*mult
         binary = img > thresh
         binary = 1-binary
+        binary = morphology.binary_opening(binary, morphology.disk(1))
 
         # Label connected regions of the binary image
         label_image = measure.label(binary)
@@ -43,6 +46,7 @@ def estimate_tissue_rectangle(img, plot=False):
             raise ValueError('Could not find a good threshold')
 
 
+
     # Find contours
     contours, _ = cv2.findContours(binary.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = [np.vstack(contours).squeeze()]
@@ -53,7 +57,7 @@ def estimate_tissue_rectangle(img, plot=False):
     # Draw the rectangles on the original image
     for rect in min_area_rects:
         box = cv2.boxPoints(rect)
-        box = np.int0(box)
+        box = np.intp(box)
 
     # I need to make sure the box is oriented in a consistent way
     length = np.linalg.norm(box[3] - box[0])
@@ -68,8 +72,11 @@ def estimate_tissue_rectangle(img, plot=False):
     if plot:
         plt.figure()
         plt.imshow(img, cmap='gray')
-        # plt.plot(np.append(box[:, 0], box[0, 0]), np.append(box[:, 1], box[0, 1]), 'r-')
         plt.plot(box[:, 0], box[:, 1], 'r-')
+        for contour in contours:
+            contour = contour.squeeze()
+            plt.plot(contour[:, 0], contour[:, 1], 'b-')
+        plt.axis('off')
         plt.show()
 
     # Sanity checks
@@ -83,7 +90,7 @@ def estimate_tissue_rectangle(img, plot=False):
     return box
 
 
-def get_box_grid(box, rotation=0, center=(0, 0)):
+def get_box_grid(box, rotation=0, center=(0, 0), img=None):
     length = np.linalg.norm(box[3] - box[0])
     width = np.linalg.norm(box[1] - box[0])
     if length < width:
@@ -106,8 +113,26 @@ def get_box_grid(box, rotation=0, center=(0, 0)):
 
     # Center the grid at the centroid of the mask
     if np.linalg.norm(center) != 0:
-        ii -= np.mean(ii)- center[1]
-        jj -= np.mean(jj) - center[0]
+        ii -= np.mean(ii)- center[0]
+        jj -= np.mean(jj) - center[1]
+
+
+    # Making sure the grid is within the image
+    if img is not None:
+        mask = np.zeros(ii.shape, dtype=bool)
+        mask[ii < 0] = 1
+        mask[jj < 0] = 1
+        mask[ii >= img.shape[0]] = 1
+        mask[jj >= img.shape[1]] = 1
+        mask = morphology.binary_dilation(mask, morphology.disk(2))
+        ii[ii < 0] = 0
+        jj[jj < 0] = 0
+        ii[ii >= img.shape[0]] = img.shape[0]-1
+        jj[jj >= img.shape[1]] = img.shape[1]-1
+
+        ii = ii.astype(int)
+        jj = jj.astype(int)
+        return ii, jj, mask
 
     return ii, jj
 
@@ -120,22 +145,24 @@ def rotate_and_evaluate(box, zero_frame, centroid, angle):
 
     # Evaluate frame_zero at the grid points
     zero_frame = (zero_frame - np.min(zero_frame)) / (np.max(zero_frame) - np.min(zero_frame))
-    max_val = np.max(zero_frame)
-    values = np.array([zero_frame[int(j), int(i)] 
-                       if 0 <= int(i) < zero_frame.shape[1] and 0 <= int(j) < zero_frame.shape[0] 
-                       else max_val for i, j in zip(ii.flatten(), jj.flatten())])
-    values = values.reshape(ii.shape)
+
+    values = evaluate_image_in_grid(ii, jj, zero_frame)
 
     return ii, jj, values, np.sum(values, axis=0)
 
 
 def evaluate_image_in_grid(ii, jj, img):
-    max_val = np.max(img)
-    values = np.array([img[int(j), int(i)] 
-                       if 0 <= int(i) < img.shape[1] and 0 <= int(j) < img.shape[0] 
-                       else max_val for i, j in zip(ii.flatten(), jj.flatten())])
-    values = values.reshape(ii.shape)
-    
+    # Making sure the grid is within the image
+    ii[ii < 0] = 0
+    jj[jj < 0] = 0
+    ii[ii >= img.shape[0]] = img.shape[0]-1
+    jj[jj >= img.shape[1]] = img.shape[1]-1
+
+    ii = ii.astype(int)
+    jj = jj.astype(int)
+
+    values = img[jj,ii]
+
     return values
 
 
@@ -246,6 +273,178 @@ def get_displacements(all_frame_vals):
     return point_1_left, point_2_left, point_1_right, point_2_right
 
 
+def find_traces(arr, rescale, half, reverse=False):
+    # Generate a gaussian function for wieghting the peaks
+    g = windows.gaussian(1001, 5*rescale)
+    gfunc = interp1d(np.arange(0, len(g), 1)-len(g)//2, g, fill_value=0, bounds_error=False)
+
+
+    frame_peaks = np.zeros([arr.shape[0], 4])
+    x = np.linspace(0, 1, arr.shape[1])
+    weights = ((np.tanh((x-0.8)*40)+1)/2)*((np.tanh((-x+0.95)*40)+1)/2) + ((np.tanh((-x+0.2)*40)+1)/2)*(np.tanh((x-0.05)*40)+1)/2
+    x = np.arange(0, arr.shape[1], 1)
+
+    if reverse:
+        arr = arr[::-1]
+
+    for i in range(arr.shape[0]):
+        aux = arr[i]*weights
+        peaks = find_peaks(aux, distance=30*rescale)[0]
+        peaks_left = peaks[peaks < half]
+        peaks_right = peaks[peaks > half]
+
+        order = np.argsort(aux[peaks_left])
+        peaks_left = peaks_left[order[-2:]]
+        peaks_left = np.sort(peaks_left)
+
+        order = np.argsort(aux[peaks_right])
+        peaks_right = peaks_right[order[-2:]]
+        peaks_right = np.sort(peaks_right)
+
+        peaks = np.append(peaks_left, peaks_right)
+        frame_peaks[i] = peaks
+
+        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1]) + gfunc(x-peaks[2]) + gfunc(x-peaks[3])
+
+    if reverse:
+        frame_peaks = frame_peaks[::-1]
+
+    # plt.figure(figsize=(10, 6))
+    # plt.imshow(arr, aspect='auto', cmap='viridis')
+    # plt.scatter(frame_peaks[:, 0], np.arange(arr.shape[0]), color='r', label='Peak 1 Left')
+    # plt.scatter(frame_peaks[:, 1], np.arange(arr.shape[0]), color='r', marker='x', label='Peak 2 Left')
+    # plt.scatter(frame_peaks[:, 2], np.arange(arr.shape[0]), color='b', label='Peak 1 Right')
+    # plt.scatter(frame_peaks[:, 3], np.arange(arr.shape[0]), color='b', marker='x', label='Peak 2 Right')
+    # plt.legend()
+    # plt.xlabel('Pixel Position')
+    # plt.ylabel('Frame')
+    # plt.title('Frame Peaks and Array')
+    # plt.show()
+
+    return frame_peaks
+
+
+def check_peak_traces(frame_peaks, frame_peaks_r):
+    disp = frame_peaks - frame_peaks[0]
+    disp[:,2:] = -disp[:,2:]
+    disp_r = frame_peaks_r - frame_peaks_r[0]
+    disp_r[:,2:] = -disp_r[:,2:]
+
+    std_disp = np.std(disp, axis=1)
+    std_disp_r = np.std(disp_r, axis=1)
+
+    if np.mean(std_disp) < np.mean(std_disp_r):
+        return frame_peaks
+    else:
+        return frame_peaks_r
+
+
+def get_displacements_2(all_frame_vals, rescale=4):
+    # Apply a low-pass filter to all_frame_vals
+    b, a = butter(N=4, Wn=0.1, btype='low', analog=False)
+    all_frame_vals_filt = np.zeros_like(all_frame_vals)
+    for i in range(all_frame_vals.shape[0]):
+        all_frame_vals_filt[i] = filtfilt(b, a, all_frame_vals[i])
+    
+    arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
+    arr = np.abs(arr)
+    half = arr.shape[1]//2*rescale
+
+    arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
+
+    # Find traces
+    frame_peaks = find_traces(arr, rescale, half)
+    frame_peaks_r = find_traces(arr, rescale, half, reverse=True)
+    frame_peaks = check_peak_traces(frame_peaks, frame_peaks_r)
+
+    # Define the Butterworth filter
+    b, a = butter(N=4, Wn=0.05, btype='low', analog=False)
+
+    smooth_curves = np.zeros_like(frame_peaks)
+    for i in range(4):
+        curve = frame_peaks[:, i]
+        side = 'left' if i < 2 else 'right'
+
+        # Apply the filter to the curve
+        smooth_curve = filtfilt(b, a, curve)
+        smooth_curve = correct_by_rest_position(smooth_curve, side, bins=256)
+
+        smooth_curves[:, i] = smooth_curve
+
+    smooth_curves = smooth_curves / rescale
+
+    # Resample the curves
+    f = interp1d(np.linspace(0, 1, smooth_curves.shape[0]), smooth_curves, axis=0)
+    smooth_curves = f(np.linspace(0, 1, all_frame_vals.shape[0]))
+
+    return smooth_curves[:,0], smooth_curves[:,1], smooth_curves[:,2], smooth_curves[:,3]
+
+
+def check_traces(traces):
+    strikes = np.zeros(4, dtype=int)
+
+    point_1_left, point_2_left, point_1_right, point_2_right = traces
+
+    point_1_disp_left = point_1_left - np.min(point_1_left)
+    point_2_disp_left = point_2_left - np.min(point_2_left)
+    point_1_disp_right = -(point_1_right - np.max(point_1_right))
+    point_2_disp_right = -(point_2_right - np.max(point_2_right))
+
+    # First check: post width should be somewhat constant
+    width_left = np.abs(point_2_disp_left - point_1_disp_left)
+    width_right = np.abs(point_2_disp_right - point_1_disp_right)
+
+    if np.std(width_left) > 1:
+        strikes[:2] += 1
+    if np.std(width_right) > 1:
+        strikes[2:] += 1
+
+
+    # Second check: the variation of the traces should be small
+    error_1l_2l = np.linalg.norm(point_1_disp_left - point_2_disp_left)
+    error_1l_1r = np.linalg.norm(point_1_disp_left - point_1_disp_right)
+    error_1l_2r = np.linalg.norm(point_1_disp_left - point_2_disp_right)
+    error_2l_1r = np.linalg.norm(point_2_disp_left - point_1_disp_right)
+    error_2l_2r = np.linalg.norm(point_2_disp_left - point_2_disp_right)
+    error_1r_2r = np.linalg.norm(point_1_disp_right - point_2_disp_right)
+
+    # Error leaving 1l out
+    error_1l_out = np.mean([error_2l_1r, error_2l_2r, error_1r_2r])
+    error_2l_out = np.mean([error_1l_1r, error_1l_2r, error_1r_2r])
+    error_1r_out = np.mean([error_1l_2l, error_2l_2r, error_1l_2r])
+    error_2r_out = np.mean([error_1l_2l, error_2l_1r, error_1l_1r])
+
+    mean_1l_out = np.mean([error_2l_out, error_1r_out, error_2r_out])
+    std_1l_out = np.std([error_2l_out, error_1r_out, error_2r_out])
+    mean_2l_out = np.mean([error_1l_out, error_1r_out, error_2r_out])
+    std_2l_out = np.std([error_1l_out, error_1r_out, error_2r_out])
+    mean_1r_out = np.mean([error_1l_out, error_2l_out, error_2r_out])
+    std_1r_out = np.std([error_1l_out, error_2l_out, error_2r_out])
+    mean_2r_out = np.mean([error_1l_out, error_2l_out, error_1r_out])
+    std_2r_out = np.std([error_1l_out, error_2l_out, error_1r_out])
+
+
+    if error_1l_out < (mean_1l_out - 3*std_1l_out):
+        strikes[0] += 1
+    if error_2l_out < (mean_2l_out - 3*std_2l_out):
+        strikes[1] += 1
+    if error_1r_out < (mean_1r_out - 3*std_1r_out):
+        strikes[2] += 1
+    if error_2r_out < (mean_2r_out - 3*std_2r_out):
+        strikes[3] += 1
+
+    if strikes[0] == 2:
+        point_1_left[:] = np.nan
+    if strikes[1] == 2:
+        point_2_left[:] = np.nan
+    if strikes[2] == 2:
+        point_1_right[:] = np.nan
+    if strikes[3] == 2:
+        point_2_right[:] = np.nan
+
+    return point_1_left, point_2_left, point_1_right, point_2_right
+
+
 def get_mean_trace(traces):
     point_1_left, point_2_left, point_1_right, point_2_right = traces
 
@@ -254,10 +453,9 @@ def get_mean_trace(traces):
     point_1_disp_right = -(point_1_right - np.max(point_1_right))
     point_2_disp_right = -(point_2_right - np.max(point_2_right))
 
-    mean_trace = (point_1_disp_left + point_2_disp_left + point_1_disp_right + point_2_disp_right) / 4
+    mean_trace = np.nanmean([point_1_disp_left, point_2_disp_left, point_1_disp_right, point_2_disp_right], axis=0)
 
-    point_1_disp_left = point_1_left - np.min(point_1_left)
-    prominence = (np.max(point_1_disp_left) - np.min(point_1_disp_left))*0.6
+    prominence = (np.max(mean_trace) - np.min(mean_trace))*0.5
     peaks_mean, prop_mean = find_peaks(mean_trace, prominence=prominence, width=10)
     rate_mean = np.mean(np.diff(peaks_mean))
     width = int(rate_mean)
@@ -279,16 +477,26 @@ def get_mean_trace(traces):
 
 
 def get_tissue_width(values, traces, ls, plot=False):
-    middle_tissue = np.mean(traces, axis=0)
+    point_1_left, point_2_left, point_1_right, point_2_right = traces
+
+    if np.any(np.isnan(point_1_left)):
+        middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
+    elif np.any(np.isnan(point_2_left)):
+        middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
+    elif np.any(np.isnan(point_1_right)):
+        middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
+    elif np.any(np.isnan(point_2_right)):
+        middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
+    else:
+        middle_tissue = np.nanmean(traces, axis=0)
     middle_tissue = int(np.mean(middle_tissue))
 
     mid_values = values[:, :, middle_tissue]
     mid_values = (mid_values - mid_values.min()) / (mid_values.max() - mid_values.min())
 
-    mask_1 = segmentation.flood_fill(mid_values, (0, 0), -1, tolerance=0.1)
-    mask_2 = segmentation.flood_fill(mid_values, (mid_values.shape[0] - 1, mid_values.shape[1] - 1), -1, tolerance=0.1)
-
-    mask = 1 - ((mask_1 == -1) + (mask_2 == -1))
+    arr = filters.sobel(filters.unsharp_mask(mid_values, radius=1, amount=5), axis=1)
+    arr = filters.gaussian(np.abs(arr), sigma=2)
+    mask = arr > filters.threshold_minimum(arr)
 
     # Label connected regions of the mask
     labeled_mask = measure.label(mask)
@@ -299,6 +507,9 @@ def get_tissue_width(values, traces, ls, plot=False):
 
     # Create a mask for the largest connected component
     mask = labeled_mask == largest_region.label
+
+    mask = morphology.binary_closing(mask, footprint=morphology.disk(10))
+
     mask = mask.astype(int) - morphology.binary_erosion(mask, footprint=np.ones((1,3), dtype=int))
     points = np.where(mask==1)[1]
     points = points.reshape([-1,2])
@@ -310,7 +521,11 @@ def get_tissue_width(values, traces, ls, plot=False):
     if plot:
         plt.figure()
         plt.imshow(mid_values, cmap='gray')
-        plt.imshow(mask, cmap='viridis', alpha=0.5)
+        mask = morphology.binary_dilation(mask, morphology.disk(1))
+        mask = mask.astype(float)
+        mask[mask == 0] = np.nan
+        plt.imshow(mask, cmap='bwr', vmin=0, vmax=1)
+        plt.axis('off')
 
     return width
 
@@ -375,8 +590,7 @@ def plot_time_traces(traces, zero_frame, box, angle, all_frame_values):
     ax0.set_aspect('equal')
 
     # Big subplot
-    arr = np.vstack((1-values, 1-all_frame_values))
-    ax_big.imshow(arr, aspect='auto', cmap='viridis')
+    ax_big.imshow(1-all_frame_values, aspect='auto', cmap='viridis')
     ax_big.plot(point_1_left, np.arange(0, point_1_left.shape[0], 1), 'r')
     ax_big.plot(point_2_left, np.arange(0, point_2_left.shape[0], 1), 'r--')
     ax_big.plot(point_1_right, np.arange(0, point_1_right.shape[0], 1), 'b')
@@ -395,9 +609,13 @@ def plot_time_traces(traces, zero_frame, box, angle, all_frame_values):
 
 def plot_stack_traces(traces, all_frame_vals, box, angle, peaks, tif_stack):
     point_1_left, point_2_left, point_1_right, point_2_right = traces
-    point_1_disp_left = point_1_left - np.min(point_1_left)
 
-    rest_frames= np.where(point_1_disp_left == 0)[0]
+    if np.isnan(point_1_left).any():
+        curve = point_2_left - np.min(point_2_left)
+    else:
+        curve = point_1_left - np.min(point_1_left) 
+
+    rest_frames= np.where(curve == 0)[0]
     rest_frame = np.argmin(np.abs(rest_frames - (peaks[0] + peaks[1])//2))
     rest_idx = rest_frames[rest_frame]
     rest_frame = tif_stack[rest_idx]

@@ -13,21 +13,18 @@ import matplotlib.pyplot as plt
 from glob import glob
 
 
-samples = ['gem02']
-days = ['pre', 'post']
-# samples = ['gem03']
-# days = ['day7']
-
-path = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2_2/'
+path = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Tissues/dataset2_2/'
 samples = os.listdir(path)
 samples = [sample for sample in samples if os.path.isdir(path + sample)]
 samples = sorted(samples)
-samples = ['gem02']
+
+samples = ['gem10']
+days = ['pre', 'post']
 for sample in samples:
     for day in days:
         tissue_fldr = f'{path}/{sample}/{day}/'
-        if os.path.exists(f'{tissue_fldr}/improc_dsp.npz'):
-            continue
+        # if os.path.exists(f'{tissue_fldr}/improc_dsp.npz'):
+        #     continue
 
         print(f'Processing {sample} {day}')
     
@@ -36,16 +33,17 @@ for sample in samples:
         if not os.path.exists(png_dump):
             os.makedirs(png_dump)
 
-        images = find_images(tissue_fldr, dataset=1)
+        images = find_images(tissue_fldr, dataset=2)
 
         tissue = FtugTissue(tissue_fldr, images)
         tissue.plot_images(png_dump)
 
-        tissue.get_tissue_mask(tissue_mask_type='actin')
+        tissue.get_tissue_mask()
         tissue.plot_tissue_mask(png_dump)
 
         # Fiber processing
-        if 'fiber' in images:
+        print(images)
+        if 'fibers' in images:
             tissue.get_fiber_mask()
             tissue.process_fibers()
             tissue.plot_fiber_processing(png_dump)
@@ -54,7 +52,7 @@ for sample in samples:
         if 'actin' in images:
             tissue.get_actin_blob_mask()
             tissue.get_actin_mask()
-            tissue.process_actin()
+            tissue.process_actin(force_compute=True)
             tissue.plot_actin_processing(png_dump)
             tissue.create_cell_mask()
 

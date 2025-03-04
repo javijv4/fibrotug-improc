@@ -23,10 +23,14 @@ from img2mesh import mask2mesh, mask2mesh_with_fibers, mask2mesh_only_fibers, fi
 
 
 class DSPProtocolTissue:
-    def __init__(self, folder, pre_tissue, post_tissue, fixed_image, flip180=False, recompute_crop=False) -> None:
+    def __init__(self, folder, pre_tissue, post_tissue, fixed_image, out_fldr=None, flip180=False, recompute_crop=False) -> None:
         self.folder = folder
-        self.mesh_folder = folder + 'mesh/'
-        self.data_folder = folder + 'data/'
+        if out_fldr is None:
+            self.out_fldr = folder
+        else:
+            self.out_fldr = out_fldr
+        self.mesh_folder = out_fldr + 'mesh/'
+        self.data_folder = out_fldr + 'data/'
 
         self.pre_tissue = pre_tissue
         self.post_tissue = post_tissue
@@ -332,7 +336,7 @@ class DSPProtocolTissue:
 
         # Rotation
         rot = np.zeros(1)
-        rot = rotate_interactive(mask, rot)[0]
+        rot = rotate_interactive(image, rot)[0]
 
         # Crop
         box = crop_interactive(image, rot)
@@ -829,29 +833,39 @@ class FtugTissue:
         if not force_compute:
             try:
                 self.blobs_mask = io.imread(self.tissue_fldr + 'blob_mask.tif')
-                self.interpolate_mask = io.imread(self.tissue_fldr + 'interpolate_mask.tif')
-                self.actin_image_filtered = image
                 print('Loaded actin blob mask from file' + self.tissue_fldr + 'blob_mask.tif')
-                return
             except:
                 pass
 
+            try:
+                self.interpolate_mask = io.imread(self.tissue_fldr + 'interpolate_mask.tif')
+                print('Loaded interpolate mask from file' + self.tissue_fldr + 'interpolate_mask.tif')
+            except:
+                pass
+
+            self.actin_image_filtered = image
+            if hasattr(self, 'blobs_mask') and hasattr(self, 'interpolate_mask'):
+                return
+
         print('Computing actin blob mask')
         # If it doesn't exist, generate it
-        blobs_mask = actproc.clean_blobs_mask(image,
-                                              blob_threshold=blob_threshold,
-                                              eccentricity_threshold=eccentricity_threshold,
-                                              blob_min_size=blob_min_size)
-        blobs_mask = transform.rescale(blobs_mask, 0.5)
+        if not hasattr(self, 'blobs_mask'):
+            blobs_mask = actproc.clean_blobs_mask(image,
+                                                blob_threshold=blob_threshold,
+                                                eccentricity_threshold=eccentricity_threshold,
+                                                blob_min_size=blob_min_size)
+            blobs_mask = transform.rescale(blobs_mask, 0.5)
 
-        # Saving mask in folder
-        io.imsave(self.tissue_fldr + 'blob_mask_init.tif',
-        blobs_mask.astype(np.int8), check_contrast=False)
-        io.imsave(self.tissue_fldr + 'interpolate_mask_init.tif',
-        blobs_mask.astype(np.int8), check_contrast=False)
+            # Saving mask in folder
+            io.imsave(self.tissue_fldr + 'blob_mask_init.tif',
+            blobs_mask.astype(np.int8), check_contrast=False)
+            io.imsave(self.tissue_fldr + 'interpolate_mask_init.tif',
+            blobs_mask.astype(np.int8), check_contrast=False)
 
-        self.blobs_mask = blobs_mask
-        self.interpolate_mask = blobs_mask.copy()
+            self.blobs_mask = blobs_mask
+        
+        if not hasattr(self, 'interpolate_mask'):
+            self.interpolate_mask = self.blobs_mask.copy()
         self.actin_image_filtered = image
 
     def get_actin_mask(self, force_compute=False, thresholds=[0.9,0.8,0.7,0.6,0.5,0.4], dilation=[4,4,3,3,2,2]):
@@ -908,21 +922,25 @@ class FtugTissue:
         actin_mask = transform.rescale(self.actin_mask, 2) > 0
 
         # Nearest neighbor interpolation
+        print('Interpolating actin mask')
         angles = actproc.nearest_interpolation(interpolate_mask, actin_mask, self.actin_angle)
         actin_mask = actin_mask + interpolate_mask
         actin_mask[actin_mask>1] = 1
 
         # Mask results to tissue mask
+        print('Masking actin results')
         angles, actin_mask = actproc.mask_actin_results(angles, actin_mask, self.tissue_mask)
 
         # Smooth myofibril results
         self.actin_angle = actproc.smooth_actin_angles(angles, actin_mask, window_size = 11)
 
         # Compute dispersion
+        print('Computing actin dispersion')
         self.actin_dispersion = actproc.compute_dispersion(angles, actin_mask, window_size = 35)
         actin_mask = transform.rescale(actin_mask, 0.5) > 0
 
         # Density
+        print('Computing actin density')
         self.actin_mask = actin_mask
         self.actin_density = filters.gaussian(actin_mask, sigma=2)
 

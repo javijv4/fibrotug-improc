@@ -14,10 +14,11 @@ import meshio as io
 from skimage import io as skio
 
 tissue_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Tissues/dataset2_2/gem02/'
+sims_fldr = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Simulations/dataset2_2/gem02/'
 png_dump = tissue_fldr + 'png_dump/'
-exp_fldr = tissue_fldr + 'exp/'
-mesh_fldr = tissue_fldr + 'mesh/'
-data_fldr = tissue_fldr + 'data/'
+exp_fldr = sims_fldr + 'exp/'
+mesh_fldr = sims_fldr + 'mesh/'
+data_fldr = sims_fldr + 'data/'
 
 meshsize = 5
 pixel_size = 0.390*1e-3  #mm
@@ -43,7 +44,7 @@ if not os.path.exists(exp_fldr):
 pre_tissue = FtugTissue(pre_fldr, pre_images)
 post_tissue = FtugTissue(post_fldr, post_images)
 
-dspexp = DSPProtocolTissue(tissue_fldr, pre_tissue, post_tissue, 'pre', flip180=True)
+dspexp = DSPProtocolTissue(tissue_fldr, pre_tissue, post_tissue, 'pre', out_fldr=sims_fldr, flip180=True)
 
 dspexp.register_to_fixed('pre', mode='affine')
 dspexp.plot_warped_mask()
@@ -61,7 +62,7 @@ dspexp.save_images(exp_fldr)
 
 # One mesh
 mesh = dspexp.generate_mesh(meshsize=meshsize, pixel_size=pixel_size,
-                            use_fiber_mask=True, subdivide_fibers=False)
+                            use_fiber_mask=False, subdivide_fibers=False)
 io.write('mesh.vtu', mesh)
 io.write(mesh_fldr + 'mesh.vtu', mesh)
 
@@ -71,3 +72,11 @@ io.write(mesh_fldr + 'mesh.vtu', mesh)
 # io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
 # fiber_mesh = dspexp.generate_fiber_mesh(meshsize=meshsize*2, pixel_size=pixel_size)
 # io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)
+
+#%% Grab post displacement data
+import shutil
+
+shutil.copyfile(f'{pre_fldr}/day7_post_disp.INIT', f'{data_fldr}/day7_post_disp.INIT')
+shutil.copyfile(f'{pre_fldr}/day7_ET1_post_disp.INIT', f'{data_fldr}/day7_ET1_post_disp.INIT')
+shutil.copyfile(f'{pre_fldr}/day7_6hrs_post_disp.INIT', f'{data_fldr}/day7_6hrs_post_disp.INIT')
+shutil.copyfile(f'{post_fldr}/day9_post_disp.INIT', f'{data_fldr}/day9_post_disp.INIT')
