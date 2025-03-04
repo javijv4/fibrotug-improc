@@ -79,7 +79,7 @@ class DSPProtocolTissue:
             fiber_mask = np.zeros_like(tissue_mask)
             mesh, elem_fiber_mask, _ = mask2mesh_with_fibers(tissue_mask, fiber_mask, meshsize=meshsize)
             # mesh = mask2mesh(tissue_mask, meshsize)
-        print(np.min(mesh.points,axis=0), np.max(mesh.points,axis=0))
+            
         ij_nodes = np.floor(mesh.points).astype(int)
 
         # Project data to mesh
@@ -288,6 +288,7 @@ class DSPProtocolTissue:
 
         # Find boundary
         bdata = find_boundary(mesh)
+
         if use_fiber_mask:
             fiber_mesh.points = fiber_mesh.points * pixel_size
             fiber_bdata = find_boundary(fiber_mesh)

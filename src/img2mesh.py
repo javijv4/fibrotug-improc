@@ -561,6 +561,12 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     elem_fiber_mask = 1-inholes
 
+    print('Removing disconnected cells')
+    disconnected_cells = find_disconnected_cells(ien[elem_fiber_mask==1])
+    cells = np.arange(len(ien))
+    cells = cells[elem_fiber_mask==1]
+    elem_fiber_mask[cells[disconnected_cells]] = 0
+
     # Check for isolated cells
     print('Finding fiber_mesh neighbors')
     fiber_elems = np.where(elem_fiber_mask==1)[0]
@@ -588,7 +594,6 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     if subdivide_fibers:
         print('Subdividing fiber elements')
         tri_mesh = subdivide_mesh_fibers(tri_mesh, elem_fiber_mask, bfaces)
-    io.write('check.vtu', tri_mesh)
 
     # Getting boundaries to fix bad elements
     xmin = np.min(tri_mesh.points[:,0])
@@ -607,6 +612,7 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     xyz = xyz/rescale
     tri_mesh = io.Mesh(xyz, {'triangle': ien})
+    io.write('check.vtu', tri_mesh)
 
     # Create fiber mesh
     fiber_mesh, map_mesh_fiber, map_fiber_mesh = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
@@ -901,8 +907,8 @@ def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
                 xyz = np.delete(xyz, [del_node], axis=0)
                 elem_del.append(i)
 
-            xyz[xyz[:,0] < tol] = x0
-            xyz[xyz[:,0] > xl-tol,0] = xl
+            xyz[np.isclose(xyz[:,0], x0, atol=tol),0] = x0
+            xyz[np.isclose(xyz[:,0], xl, atol=tol),0] = xl
         else:
             print(i)
 

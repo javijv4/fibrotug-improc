@@ -473,7 +473,11 @@ def get_mean_trace(traces):
     # Get a mean individual peak
     mean_individual_peak = np.mean(individual_peaks, axis=0)
 
-    return mean_individual_peak, mean_trace, individual_peaks
+    # Making sure the curve is zero at the beggining and at the end
+    x=np.linspace(0,1,len(mean_individual_peak))
+    weight = ((np.tanh((x-0.1)*40)+1)/2)*((np.tanh((-x+0.9)*40)+1)/2)
+
+    return mean_individual_peak*weight, mean_trace, individual_peaks
 
 
 def get_tissue_width(values, traces, ls, plot=False):

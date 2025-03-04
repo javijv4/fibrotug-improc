@@ -18,11 +18,13 @@ samples = os.listdir(path)
 samples = [sample for sample in samples if os.path.isdir(path + sample)]
 samples = sorted(samples)
 
-samples = ['gem10']
+# samples = ['gem02']
 days = ['pre', 'post']
 for sample in samples:
     for day in days:
         tissue_fldr = f'{path}/{sample}/{day}/'
+        if 'gem' not in sample:
+            continue
         # if os.path.exists(f'{tissue_fldr}/improc_dsp.npz'):
         #     continue
 
@@ -45,7 +47,7 @@ for sample in samples:
         print(images)
         if 'fibers' in images:
             tissue.get_fiber_mask()
-            tissue.process_fibers()
+            tissue.process_fibers(force_compute=True)
             tissue.plot_fiber_processing(png_dump)
 
         # Actinin processing

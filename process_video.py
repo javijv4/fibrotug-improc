@@ -13,7 +13,7 @@ from vidprocessing import vidutils as vut
 import cheartio as chio
 import glob
 
-dataset_fldr = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/dataset2_2/gem02/'
+dataset_fldr = '/home/jilberto/Dropbox (University of Michigan)/Projects/fibroTUG/DSP/Tissues/'
 tif_files = glob.glob(f'{dataset_fldr}/**/*corrected.tif', recursive=True)
 
 # Movie params
@@ -26,9 +26,8 @@ nfailed = 0
 nsuccess = 0
 
 #%%
-# tif_files = ['/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Tissues/dataset2_2/gem02/post/A_0.41_0.1_GEM12_s1-day9-ET1-02_corrected.tif']
 for tif_stack_path in tif_files:
-    # try:
+    try:
         print(f'Processing {tif_stack_path}')
         tif_stack = io.imread(tif_stack_path)
         zero_frame = tif_stack[0]
@@ -111,15 +110,16 @@ for tif_stack_path in tif_files:
 
 
         # Save mean individual trace
-        time = np.arange(len(mean_individual_trace))/fps
-        save = np.column_stack((time, mean_individual_trace))
+        disp_trace = mean_individual_trace / ls / 1000
+        time = np.arange(len(disp_trace))/fps
+        save = np.column_stack((time, disp_trace))
         chio.write_dfile(f'{fldr}/{name}_post_disp.INIT', save)
 
         nsuccess += 1
 
-    # except:
-    #     print(f'Error processing {tif_stack_path}')
-    #     nfailed += 1
-    #     continue
+    except:
+        print(f'Error processing {tif_stack_path}')
+        nfailed += 1
+        continue
 
 print(f'Processed {nsuccess} files, failed {nfailed}')
