@@ -77,7 +77,6 @@ def estimate_tissue_rectangle(img, plot=False):
             contour = contour.squeeze()
             plt.plot(contour[:, 0], contour[:, 1], 'b-')
         plt.axis('off')
-        plt.show()
 
     # Sanity checks
     aspect_ratio = length / width
@@ -340,12 +339,7 @@ def check_peak_traces(frame_peaks, frame_peaks_r):
 
 
 def get_displacements_2(all_frame_vals, rescale=4):
-    # Apply a low-pass filter to all_frame_vals
-    b, a = butter(N=4, Wn=0.1, btype='low', analog=False)
-    all_frame_vals_filt = np.zeros_like(all_frame_vals)
-    for i in range(all_frame_vals.shape[0]):
-        all_frame_vals_filt[i] = filtfilt(b, a, all_frame_vals[i])
-    
+    # Apply a low-pass filter to all_frame_vals    
     arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
     arr = np.abs(arr)
     half = arr.shape[1]//2*rescale
@@ -542,10 +536,12 @@ def analyze_post_displacement(trace, ls):
     peaks, _ = find_peaks(force, height=max_disp/10)
     # Find peak times
     peak_times = peaks*dt
+
+    cycle_times = np.diff(peak_times)
     # Find irregularity
-    irregularity = np.std(np.diff(peak_times))
+    irregularity = np.std(cycle_times)
     # Find bpm
-    bpm = 60/irregularity
+    bpm = 60/np.mean(cycle_times)
     
     return max_disp / ls, irregularity, bpm, peaks
 
@@ -722,3 +718,106 @@ def plot_traces_and_mean(traces, mean_trace, mean_individual_trace, individual_t
     ax2.set_ylim(ylim)
 
     plt.tight_layout()
+
+
+
+def interactive_box_selection(zero_frame, box):
+
+    fig, ax = plt.subplots()
+    # Plot zero frame and the box
+    plt.imshow(zero_frame, cmap='gray')
+    plt.plot([box[0, 0], box[1, 0]], [box[0, 1], box[1, 1]], 'r-')
+    plt.plot([box[1, 0], box[2, 0]], [box[1, 1], box[2, 1]], 'r-')
+    plt.plot([box[2, 0], box[3, 0]], [box[2, 1], box[3, 1]], 'r-')
+    plt.plot([box[3, 0], box[0, 0]], [box[3, 1], box[0, 1]], 'r-')
+    plt.title('Zero Frame with Estimated Box')
+
+    # Wait for user to press enter to close the figure
+    def on_key(event):
+        if event.key == 'enter':
+            plt.close(fig)
+        return box
+
+
+    print('waerara')
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    plt.show()
+
+
+    # Initialize the box list
+    selected_box = []
+
+    # Function to update the plot with the selected points
+    def onclick(event):
+        if len(selected_box) < 4:
+            selected_box.append([event.xdata, event.ydata])
+            plt.scatter(event.xdata, event.ydata, c='red')
+            plt.draw()
+        if len(selected_box) == 4:
+            fig.canvas.mpl_disconnect(cid)
+            ax.clear()
+            ax.imshow(zero_frame, cmap='gray')
+            ax.plot([selected_box[0][0], selected_box[1][0]], [selected_box[0][1], selected_box[1][1]], 'r-')
+            ax.plot([selected_box[1][0], selected_box[2][0]], [selected_box[1][1], selected_box[2][1]], 'r-')
+            ax.plot([selected_box[2][0], selected_box[3][0]], [selected_box[2][1], selected_box[3][1]], 'r-')
+            ax.plot([selected_box[3][0], selected_box[0][0]], [selected_box[3][1], selected_box[0][1]], 'r-')
+            plt.draw()
+
+    # Plot the zero frame and connect the click event
+    ax.imshow(zero_frame, cmap='gray')
+    cid = fig.canvas.mpl_connect('button_press_event', onclick)
+    plt.title('Click to select the four vertices of the box')
+
+    # Wait for user to press enter to close the figure
+    def on_key(event):
+        if event.key == 'enter':
+            plt.close(fig)
+
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    plt.show()
+
+    # Convert the selected_box list to a numpy array if points were selected
+    if len(selected_box) == 4:
+        box = np.array(selected_box)
+
+    return box
+
+    # print("Please select the four vertices of the box in the displayed image.")
+    
+    # # Initialize the box list
+    # selected_box = []
+
+    # # Function to update the plot with the selected points
+    # def onclick(event):
+    #     if len(selected_box) < 4:
+    #         selected_box.append([event.xdata, event.ydata])
+    #         plt.scatter(event.xdata, event.ydata, c='red')
+    #         plt.draw()
+    #     if len(selected_box) == 4:
+    #         fig.canvas.mpl_disconnect(cid)
+    #         ax.clear()
+    #         ax.imshow(zero_frame, cmap='gray')
+    #         ax.plot([selected_box[0][0], selected_box[1][0]], [selected_box[0][1], selected_box[1][1]], 'r-')
+    #         ax.plot([selected_box[1][0], selected_box[2][0]], [selected_box[1][1], selected_box[2][1]], 'r-')
+    #         ax.plot([selected_box[2][0], selected_box[3][0]], [selected_box[2][1], selected_box[3][1]], 'r-')
+    #         ax.plot([selected_box[3][0], selected_box[0][0]], [selected_box[3][1], selected_box[0][1]], 'r-')
+    #         plt.draw()
+
+    # # Plot the zero frame and connect the click event
+    # ax.imshow(zero_frame, cmap='gray')
+    # cid = fig.canvas.mpl_connect('button_press_event', onclick)
+    # plt.title('Click to select the four vertices of the box')
+
+    # # Wait for user to press enter to close the figure
+    # def on_key(event):
+    #     if event.key == 'enter':
+    #         plt.close(fig)
+
+    # fig.canvas.mpl_connect('key_press_event', on_key)
+    # plt.show()
+
+    # # Convert the selected_box list to a numpy array if points were selected
+    # if len(selected_box) == 4:
+    #     box = np.array(selected_box)
+
+    # return box

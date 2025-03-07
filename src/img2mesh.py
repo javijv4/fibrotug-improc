@@ -511,12 +511,12 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     holes = [hole for _, hole in sorted(zip(len_holes, holes), key=lambda x: x[0])][::-1]
 
 
-    # # Plot boundary and holes
-    # fig, ax = plt.subplots()
-    # ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r-', linewidth=2, label='Boundary')
-    # for hole in holes:
-    #     ax.plot(hole[:, 1], hole[:, 0], 'b-', linewidth=1, label='Hole')
-    # ax.set_aspect('equal')
+    # Plot boundary and holes
+    fig, ax = plt.subplots()
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r-', linewidth=2, label='Boundary')
+    for hole in holes:
+        ax.plot(hole[:, 1], hole[:, 0], 'b-', linewidth=1, label='Hole')
+    ax.set_aspect('equal')
 
 
     # mesh
@@ -548,6 +548,8 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     ien = tri_mesh.cells_dict['triangle']
     _, bfaces = get_surface_mesh(tri_mesh)
 
+    io.write('check.vtu', tri_mesh)
+
     # Obtaining mask of fiber elements
     midpoints = np.mean(xyz[ien], axis=1)
     inholes = np.zeros(len(midpoints), dtype=int)
@@ -560,6 +562,25 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
         inholes[marker] = 1
 
     elem_fiber_mask = 1-inholes
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    io.write('check.vtu', tri_mesh)
+
+    fib_mesh = io.Mesh(xyz, {'triangle': ien[elem_fiber_mask==1]})
+    io.write('check.vtu', fib_mesh)
+
+    # # Plot the mesh
+    # fig, ax = plt.subplots()
+    # plt.tripcolor(xyz[:,1], xyz[:,0], ien, elem_fiber_mask, shading='flat') 
+    # ax.set_aspect('equal')
+
+    # # Plot borders
+    # for hole in holes:
+    #     ax.plot(hole[:, 1], hole[:, 0], 'b-', linewidth=1, label='Hole')
+    # ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r-', linewidth=2, label='Boundary')
+
+    # plt.show()
+    
 
     print('Removing disconnected cells')
     disconnected_cells = find_disconnected_cells(ien[elem_fiber_mask==1])
@@ -589,6 +610,8 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
             elem_fiber_mask[fiber_elems[e]] = 0
 
     tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+
+    io.write('check.vtu', tri_mesh)
 
     # Subdivide fiber elements if needed
     if subdivide_fibers:
@@ -851,12 +874,17 @@ def find_disconnected_cells(ien):
     visited = np.zeros(num_cells, dtype=bool)
     stack = [0]  # Start from the first cell
 
+    cont = 0
     while stack:
         cell = stack.pop()
+        cont += 1
         if not visited[cell]:
             visited[cell] = True
             neighbors = np.where(np.sum(np.isin(ien, ien[cell]), axis=1) > 0)[0]
             stack.extend(neighbors[~visited[neighbors]])
+        if cont < 100 and len(stack) == 0:  # Making sure the first 100 cells are disconnected
+            visited[cell] = False
+            stack = [cont]
 
     disconnected_cells = np.where(~visited)[0]
     return disconnected_cells

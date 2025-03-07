@@ -19,7 +19,7 @@ def check_mask(mask, cell_radius):
     props = measure.regionprops(objects)
     areas = np.array([prop.area for prop in props])
 
-    largest_area = np.argmax(areas)
+    largest_area = np.max(areas)
 
     if largest_area > 20*area_cell:
         return False
@@ -28,23 +28,21 @@ def check_mask(mask, cell_radius):
     good_area = (areas > area_cell*0.1) & (areas < area_cell*2)
     good_ecc = eccentricities < 0.95
 
-    if np.sum(good_area & good_ecc) > 0.9*len(areas):
+    if np.sum(good_area & good_ecc) > 0.8*len(areas):
         return True
     else:
         return False
 
-
-
 def find_nuclei(image, cleaning_size, cell_radius, min_distance,
                 show=False):
     # Threshold image
-    thresh_mult = 1
+    thresh_mult = 0.25
     check = False
     while not check:
         mask = image > filters.threshold_yen(image)*thresh_mult
         mask = morphology.binary_opening(mask, footprint=morphology.disk(cleaning_size))
         check = check_mask(mask, cell_radius)
-        thresh_mult += 0.5
+        thresh_mult += 0.25
         if thresh_mult > 10:
             raise ValueError('Could not find a good threshold')
 
