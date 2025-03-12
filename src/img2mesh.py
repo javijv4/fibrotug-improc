@@ -637,6 +637,9 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     tri_mesh = io.Mesh(xyz, {'triangle': ien})
     io.write('check.vtu', tri_mesh)
 
+    # Just making sure the mesh is built correctly (probably not the smartest way of doing this)
+    tri_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
+
     # Create fiber mesh
     fiber_mesh, map_mesh_fiber, map_fiber_mesh = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
 
@@ -889,10 +892,15 @@ def find_disconnected_cells(ien):
     disconnected_cells = np.where(~visited)[0]
     return disconnected_cells
 
+
+def check_mesh_correctness():
+    pass
+
 def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
     quality = tri_quality_aspect_ratio(xyz, ien)
 
-    to_fix = np.where(quality > 10)[0]
+    to_fix = np.where(quality > 7)[0]
+    to_fix = np.union1d(to_fix, np.where(np.isnan(quality))[0])
 
     x0 = np.min(xyz[:,0])
     xl = np.max(xyz[:,0])
@@ -943,7 +951,20 @@ def fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask):
 
     ien = np.delete(ien, elem_del, axis=0)
     elem_fiber_mask = np.delete(elem_fiber_mask, elem_del)
-    return xyz, ien, elem_fiber_mask, len(elem_del)
+
+    # Check ien. Sometimes elements end up having same nodes
+    elems1 = np.where(np.any((ien[:,1:]-ien[:,0][:,None] == 0), axis=1))[0]
+    elems2 = np.where(np.any((ien[:,np.array([0,2])]-ien[:,1][:,None] == 0), axis=1))[0]
+    elems3 = np.where(np.any((ien[:,np.array([1,2])]-ien[:,0][:,None] == 0), axis=1))[0]
+    elem_del2 = np.union1d(np.union1d(elems1, elems2), elems3)
+
+    if len(elem_del2) > 0:
+        print(elem_del2)
+        ien = np.delete(ien, elem_del2, axis=0)
+        elem_fiber_mask = np.delete(elem_fiber_mask, elem_del2)
+
+    io.write_points_cells('check.vtu', xyz, {'triangle': ien})
+    return xyz, ien, elem_fiber_mask, len(elem_del)+len(elem_del2)
 
 
 def fix_quality_one_neigh_elems(xyz, ien, belems):

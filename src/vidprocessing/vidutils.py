@@ -8,13 +8,14 @@ Created on 2025/02/27 13:24:49
 
 from matplotlib import pyplot as plt
 import numpy as np
-from skimage import io, filters, measure, draw, morphology, transform, segmentation
+from skimage import io, filters, measure, draw, morphology, transform, segmentation, exposure
 import cv2
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d, PchipInterpolator
 from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import butter, filtfilt, windows
+from matplotlib.widgets import PolygonSelector, RectangleSelector
 
 def estimate_tissue_rectangle(img, plot=False):
 
@@ -188,8 +189,11 @@ def find_tissue_rotation(box, zero_frame):
     return best_angle
 
 
-def get_mask(diff, rescale=3):
+def get_mask(diff, xlim_l, xlim_r, rescale=3):
     frangi = filters.frangi(diff, sigmas=range(rescale,rescale*3,rescale*2))
+    x = np.linspace(0,1,frangi.shape[1])
+    frangi[:,(x>xlim_l[0])*(x<xlim_l[1])] = 0
+    frangi[:,(x>xlim_r[0])*(x<xlim_r[1])] = 0
     mask = frangi > filters.threshold_triangle(frangi)
 
     # Get the two largest objects
@@ -227,15 +231,15 @@ def correct_by_rest_position(points, left_or_right, bins=128):
     return points
 
 
-def get_post_boundaries(vals, rescale=4, which='left'):
+def get_post_boundaries(vals, xlim_l, xlim_r, rescale=4, which='left'):
     nframes = vals.shape[0]
     vals = transform.rescale(vals, rescale, order=1, mode='reflect', anti_aliasing=False)
     try: 
         diff = np.gradient(vals, axis=1)
-        mask, mask_1, mask_2 = get_mask(diff, rescale=rescale)
+        mask, mask_1, mask_2 = get_mask(diff, xlim_l, xlim_r, rescale=rescale)
     except ValueError as e:
         diff = np.gradient(vals[:,::-1], axis=1)[:,::-1]
-        mask, mask_1, mask_2 = get_mask(diff, rescale=rescale)
+        mask, mask_1, mask_2 = get_mask(diff, xlim_l, xlim_r, rescale=rescale)
     
         
     mask_1 = filters.gaussian(mask_1, sigma=1)
@@ -263,24 +267,185 @@ def get_post_boundaries(vals, rescale=4, which='left'):
 
 
 def get_displacements(all_frame_vals):
-    point_1_left, point_2_left = get_post_boundaries(all_frame_vals[:, :all_frame_vals.shape[1] // 3])
-    point_1_right, point_2_right = get_post_boundaries(all_frame_vals[:, all_frame_vals.shape[1] // 3 * 2:], which='right')
+    xlim_l, xlim_r = select_post_area(all_frame_vals)
+
+    point_1_left, point_2_left = get_post_boundaries(all_frame_vals[:, :all_frame_vals.shape[1] // 3], xlim_l, xlim_r)
+    point_1_right, point_2_right = get_post_boundaries(all_frame_vals[:, all_frame_vals.shape[1] // 3 * 2:], xlim_l, xlim_r, which='right')
     point_1_right += all_frame_vals.shape[1] // 3 * 2
     point_2_right += all_frame_vals.shape[1] // 3 * 2 
 
+    return (point_1_left, point_2_left, point_1_right, point_2_right)
 
-    return point_1_left, point_2_left, point_1_right, point_2_right
 
+def get_displacements_3(all_frame_vals, zero_frame, rescale=4):
+    xlim_l, xlim_r = select_post_area(zero_frame, all_frame_vals)
+    # xlim_l = (0.14674735249621784, 0.264750378214826) 
+    # xlim_r = (0.8169440242057489, 0.9576399394856279)
 
-def find_traces(arr, rescale, half, reverse=False):
-    # Generate a gaussian function for wieghting the peaks
-    g = windows.gaussian(1001, 5*rescale)
-    gfunc = interp1d(np.arange(0, len(g), 1)-len(g)//2, g, fill_value=0, bounds_error=False)
+    # Apply a low-pass filter to all_frame_vals    
+    arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
+    # arr = np.gradient(all_frame_vals, axis=1)
+    arr = np.abs(arr)
+    half = arr.shape[1]//2*rescale
 
+    arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
 
     frame_peaks = np.zeros([arr.shape[0], 4])
     x = np.linspace(0, 1, arr.shape[1])
-    weights = ((np.tanh((x-0.8)*40)+1)/2)*((np.tanh((-x+0.95)*40)+1)/2) + ((np.tanh((-x+0.2)*40)+1)/2)*(np.tanh((x-0.05)*40)+1)/2
+    weights = np.zeros(len(x))
+    weights[(x>xlim_l[0])*(x<xlim_l[1])] = 1
+    weights[(x>xlim_r[0])*(x<xlim_r[1])] = 1
+    weights = gaussian_filter1d(weights, 1*rescale)
+    # weights = ((np.tanh((x-0.8)*40)+1)/2)*((np.tanh((-x+0.95)*40)+1)/2) + ((np.tanh((-x+0.2)*40)+1)/2)*(np.tanh((x-0.05)*40)+1)/2
+
+
+
+    disp_array = np.repeat(np.arange(-50, 51, 1), 4).reshape(-1, 4)
+    disp_array[:,-2:] = -disp_array[:,-2:]
+    disp_array = np.arange(-50, 51, 1)
+
+    gaussian = windows.gaussian(disp_array.shape[0], 3*rescale)
+
+    def get_new_peaks(disp_l, disp_r, peaks):
+        new_peaks = np.zeros_like(peaks)
+        new_peaks[:2] = peaks[:2] + disp_l
+        new_peaks[2:] = peaks[2:] + disp_r
+        return new_peaks
+    
+    disps = []
+    for i in range(arr.shape[0]):
+        aux = arr[i]*weights
+        if i == 0:
+            peaks = find_peaks(aux, distance=30*rescale)[0]
+            peaks_left = peaks[peaks < half]
+            peaks_right = peaks[peaks > half]
+
+            order = np.argsort(aux[peaks_left])
+            peaks_left = peaks_left[order[-2:]]
+            peaks_left = np.sort(peaks_left)
+
+            order = np.argsort(aux[peaks_right])
+            peaks_right = peaks_right[order[-2:]]
+            peaks_right = np.sort(peaks_right)
+
+            peaks = np.append(peaks_left, peaks_right)
+
+        else:
+            aux_func = interp1d(np.arange(0, len(aux), 1), aux, fill_value=0, bounds_error=False)
+            vals_l = np.sum(aux_func(peaks[None, :2] + disp_array[:,None]), axis=1)
+            vals_r = np.sum(aux_func(peaks[None, 2:] + disp_array[:,None]), axis=1)
+            disp_l = disp_array[np.argmax(vals_l)]
+            disp_r = disp_array[np.argmax(vals_r)]
+            disps.append((disp_l, disp_r))
+            peaks = get_new_peaks(disp_l, disp_r, peaks)
+
+        frame_peaks[i] = peaks
+
+
+    # Define the Butterworth filter
+    b, a = butter(N=4, Wn=0.05, btype='low', analog=False)
+
+    smooth_curves = np.zeros_like(frame_peaks)
+    for i in range(4):
+        curve = frame_peaks[:, i]
+        side = 'left' if i < 2 else 'right'
+
+        # Apply the filter to the curve
+        smooth_curve = filtfilt(b, a, curve)
+        smooth_curve = correct_by_rest_position(smooth_curve, side, bins=256)
+
+        smooth_curves[:, i] = smooth_curve
+
+    smooth_curves = smooth_curves / rescale
+
+    # Resample the curves
+    f = interp1d(np.linspace(0, 1, smooth_curves.shape[0]), smooth_curves, axis=0)
+    smooth_curves = f(np.linspace(0, 1, all_frame_vals.shape[0]))
+
+    return smooth_curves[:,0], smooth_curves[:,1], smooth_curves[:,2], smooth_curves[:,3]
+
+
+
+
+def get_displacements_4(all_frame_vals, zero_frame, rescale=4):
+    xlim_l, xlim_r = select_post_area(zero_frame, all_frame_vals)
+    # print(xlim_l, xlim_r)
+    # xlim_l = (0.2557427258805513, 0.28024502297090353)
+    # xlim_r = (0.7840735068912711, 0.8284839203675345)
+
+    # Apply a low-pass filter to all_frame_vals    
+    arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
+    # arr = np.gradient(all_frame_vals, axis=1)
+    arr = np.abs(arr)
+    half = arr.shape[1]//2*rescale
+
+    arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
+
+    g = windows.gaussian(1001, 3*rescale)
+    gfunc = interp1d(np.arange(0, len(g), 1)-len(g)//2, g, fill_value=0, bounds_error=False)
+
+    frame_peaks = np.zeros([arr.shape[0], 4])
+    x = np.linspace(0, 1, arr.shape[1])
+    weights = np.zeros(len(x))
+    weights[(x>xlim_l[0])*(x<xlim_l[1])] = 1
+    weights[(x>xlim_r[0])*(x<xlim_r[1])] = 1
+    weights = gaussian_filter1d(weights, 1*rescale)
+    
+    x = np.arange(0, arr.shape[1], 1)
+
+    for i in range(arr.shape[0]):
+        aux = arr[i]*weights
+        
+        peaks = find_peaks(aux, distance=300*rescale)[0]
+        peaks_left = peaks[peaks < half]
+        peaks_left_value = aux[peaks_left]
+        peaks_right = peaks[peaks > half]
+        peaks_right_value = aux[peaks_right]
+
+        peaks_left = peaks_left[np.argmax(peaks_left_value)]
+        peaks_right = peaks_right[np.argmax(peaks_right_value)]
+        peaks = np.array([peaks_left, peaks_left, peaks_right, peaks_right])
+        frame_peaks[i] = peaks
+        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1]) + gfunc(x-peaks[2]) + gfunc(x-peaks[3])
+
+
+    # Define the Butterworth filter
+    b, a = butter(N=4, Wn=0.05, btype='low', analog=False)
+
+    smooth_curves = np.zeros_like(frame_peaks)
+    for i in range(4):
+        curve = frame_peaks[:, i]
+        side = 'left' if i < 2 else 'right'
+
+        # Apply the filter to the curve
+        smooth_curve = filtfilt(b, a, curve)
+        smooth_curve = correct_by_rest_position(smooth_curve, side, bins=256)
+
+        smooth_curves[:, i] = smooth_curve
+
+    smooth_curves = smooth_curves / rescale
+
+    # Resample the curves
+    f = interp1d(np.linspace(0, 1, smooth_curves.shape[0]), smooth_curves, axis=0)
+    smooth_curves = f(np.linspace(0, 1, all_frame_vals.shape[0]))
+
+    return smooth_curves[:,0], smooth_curves[:,1], smooth_curves[:,2], smooth_curves[:,3]
+
+
+def find_traces(arr, rescale, half, xlim_l, xlim_r, reverse=False):
+    # Generate a gaussian function for wieghting the peaks
+    g = windows.gaussian(1001, 3*rescale)
+    gfunc = interp1d(np.arange(0, len(g), 1)-len(g)//2, g, fill_value=0, bounds_error=False)
+
+    frame_peaks = np.zeros([arr.shape[0], 4])
+    x = np.linspace(0, 1, arr.shape[1])
+    weights = np.zeros(len(x))
+    weights[(x>xlim_l[0])*(x<xlim_l[1])] = 1
+    weights[(x>xlim_r[0])*(x<xlim_r[1])] = 1
+    weights = gaussian_filter1d(weights, 1*rescale)
+    plt.plot(weights)
+    plt.show()
+    weights0 = weights.copy()
     x = np.arange(0, arr.shape[1], 1)
 
     if reverse:
@@ -302,23 +467,31 @@ def find_traces(arr, rescale, half, reverse=False):
 
         peaks = np.append(peaks_left, peaks_right)
         frame_peaks[i] = peaks
+        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1]) + gfunc(x-peaks[2]) + gfunc(x-peaks[3])*weights0
 
-        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1]) + gfunc(x-peaks[2]) + gfunc(x-peaks[3])
+    regularity = np.zeros(4)
+    for i in range(4):
+        individual_peaks = find_individual_peaks(frame_peaks[:, i])
+        print(len(individual_peaks))
+        if len(individual_peaks) == 0:
+            regularity[i] = np.nan
+            continue
+        regularity[i] = np.mean(np.std(np.array(individual_peaks), axis=0))
 
     if reverse:
         frame_peaks = frame_peaks[::-1]
 
-    # plt.figure(figsize=(10, 6))
-    # plt.imshow(arr, aspect='auto', cmap='viridis')
-    # plt.scatter(frame_peaks[:, 0], np.arange(arr.shape[0]), color='r', label='Peak 1 Left')
-    # plt.scatter(frame_peaks[:, 1], np.arange(arr.shape[0]), color='r', marker='x', label='Peak 2 Left')
-    # plt.scatter(frame_peaks[:, 2], np.arange(arr.shape[0]), color='b', label='Peak 1 Right')
-    # plt.scatter(frame_peaks[:, 3], np.arange(arr.shape[0]), color='b', marker='x', label='Peak 2 Right')
-    # plt.legend()
-    # plt.xlabel('Pixel Position')
-    # plt.ylabel('Frame')
-    # plt.title('Frame Peaks and Array')
-    # plt.show()
+    plt.figure(figsize=(10, 6))
+    plt.imshow(arr, aspect='auto', cmap='viridis')
+    plt.plot(frame_peaks[:, 0], np.arange(arr.shape[0]), color='r', label='Peak 1 Left')
+    plt.plot(frame_peaks[:, 1], np.arange(arr.shape[0]), color='r', label='Peak 2 Left')
+    plt.plot(frame_peaks[:, 2], np.arange(arr.shape[0]), color='b', label='Peak 1 Right')
+    plt.plot(frame_peaks[:, 3], np.arange(arr.shape[0]), color='b', label='Peak 2 Right')
+    plt.legend()
+    plt.xlabel('Pixel Position')
+    plt.ylabel('Frame')
+    plt.title('Frame Peaks and Array')
+    plt.show()
 
     return frame_peaks
 
@@ -337,18 +510,89 @@ def check_peak_traces(frame_peaks, frame_peaks_r):
     else:
         return frame_peaks_r
 
+def select_post_area(img, all_frame_vals):
+    img_aux = np.vstack([img, 1-all_frame_vals])
+    fig, ax = plt.subplots()
+    ax.imshow(img_aux, cmap='gray')
+    ax.axis('off')
+    ax.set_title('Select left post area and press Enter')
+
+    lines = []
+
+    def onselect(eclick, erelease):
+        nonlocal lines
+        for line in lines:
+            line.remove()
+        lines = []
+        line1 = ax.axvline(eclick.xdata, color='r')
+        line2 = ax.axvline(erelease.xdata, color='r')
+        lines.extend([line1, line2])
+        fig.canvas.draw()
+
+    def on_key(event):
+        if event.key == 'enter':
+            plt.close(fig)
+
+    rect_selector = RectangleSelector(ax, onselect, useblit=True, button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=True)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    plt.show()
+
+    x_min1, x_max1 = int(rect_selector.extents[0]), int(rect_selector.extents[1])
+
+    fig, ax = plt.subplots()
+    ax.imshow(img_aux, cmap='gray')
+    ax.axis('off')
+    ax.set_title('Select right post area and press Enter')
+
+    lines = []
+
+    def onselect(eclick, erelease):
+        nonlocal lines
+        for line in lines:
+            line.remove()
+        lines = []
+        line1 = ax.axvline(eclick.xdata, color='r')
+        line2 = ax.axvline(erelease.xdata, color='r')
+        lines.extend([line1, line2])
+        fig.canvas.draw()
+
+    def on_key(event):
+        if event.key == 'enter':
+            plt.close(fig)
+
+    rect_selector = RectangleSelector(ax, onselect, useblit=True, button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=True)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    plt.show()
+
+    x_min2, x_max2 = int(rect_selector.extents[0]), int(rect_selector.extents[1])
+
+    # Normalize the values
+    xmax = len(all_frame_vals[1])
+    x_min1 = x_min1/xmax
+    x_max1 = x_max1/xmax
+    x_min2 = x_min2/xmax
+    x_max2 = x_max2/xmax
+
+    return (x_min1, x_max1), (x_min2, x_max2)
 
 def get_displacements_2(all_frame_vals, rescale=4):
+    # Get area of interest
+    xlim_l, xlim_r = select_post_area(all_frame_vals)
+    # xlim_l = (0.15965166908563136, 0.3018867924528302) 
+    # xlim_r = (0.7039187227866474, 0.8490566037735849)
+
+
     # Apply a low-pass filter to all_frame_vals    
     arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
+    # arr = np.gradient(all_frame_vals, axis=1)
     arr = np.abs(arr)
     half = arr.shape[1]//2*rescale
 
     arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
 
     # Find traces
-    frame_peaks = find_traces(arr, rescale, half)
-    frame_peaks_r = find_traces(arr, rescale, half, reverse=True)
+    frame_peaks = find_traces(arr, rescale, half, xlim_l, xlim_r)
+    frame_peaks_r = find_traces(arr, rescale, half, xlim_l, xlim_r, reverse=True)
     frame_peaks = check_peak_traces(frame_peaks, frame_peaks_r)
 
     # Define the Butterworth filter
@@ -438,6 +682,26 @@ def check_traces(traces):
 
     return point_1_left, point_2_left, point_1_right, point_2_right
 
+
+def find_individual_peaks(trace):
+    prominence = (np.max(trace) - np.min(trace))*0.5
+    peaks, _ = find_peaks(trace, prominence=prominence, width=10)
+    if len(peaks) < 3:
+        return []
+    rate = np.mean(np.diff(peaks))
+    width = int(rate)
+
+    # Split mean trace into individual peaks centered in the peaks
+    individual_peaks = []
+    for i in range(len(peaks)):
+        start = int(peaks[i]) - int(width/4)
+        end = start + width
+        if start < 0: continue
+        if end > len(trace): break
+        peak_segment = trace[start:end]
+        individual_peaks.append(peak_segment)
+
+    return individual_peaks
 
 def get_mean_trace(traces):
     point_1_left, point_2_left, point_1_right, point_2_right = traces
@@ -720,104 +984,72 @@ def plot_traces_and_mean(traces, mean_trace, mean_individual_trace, individual_t
     plt.tight_layout()
 
 
+class BoxSelector:
+
+    def __init__(self, ax, img, box0=None):
+        self.canvas = ax.figure.canvas
+        self.img = img
+        self.box = box0
+        self.ax = ax
+        self.verts = []
+
+        self.poly = PolygonSelector(ax, self.onselect, props=dict(color='r', linestyle='-', linewidth=2, alpha=0.5))
+
+        self.ax.imshow(self.img, cmap='gray')
+        self.ax.set_title('Select the four vertices of the box and press Enter to confirm')
+        if self.box is not None:
+            self.verts = self.box
+            self.lines = self.plot_box(self.box)
+
+        self.canvas.mpl_connect('key_press_event', self.on_key)
+
+    def onselect(self, verts):
+        self.reset()
+        self.verts = verts
+        self.canvas.draw_idle()
+
+    def plot_box(self, verts):
+        verts = np.array(verts)
+        l1 = self.ax.plot([verts[0, 0], verts[1, 0]], [verts[0, 1], verts[1, 1]], 'r-')
+        l2 = self.ax.plot([verts[1, 0], verts[2, 0]], [verts[1, 1], verts[2, 1]], 'r-')
+        l3 = self.ax.plot([verts[2, 0], verts[3, 0]], [verts[2, 1], verts[3, 1]], 'r-')
+        l4 = self.ax.plot([verts[3, 0], verts[0, 0]], [verts[3, 1], verts[0, 1]], 'r-')
+        return (l1, l2, l3, l4)
+
+    def reset(self):
+        if hasattr(self, 'lines'):
+            for line in self.lines:
+                for l in line:
+                    l.remove()
+        self.lines = []
+
+    def disconnect(self):
+        self.poly.disconnect_events()
+        self.canvas.draw_idle()
+
+    def get_box(self):
+        return np.array(self.verts)
+
+    def on_key(self, event):
+        if event.key == 'enter':
+            self.box = get_box_from_box(self.get_box())
+            plt.close(self.ax.figure)
+
+
+
 
 def interactive_box_selection(zero_frame, box):
+    zero_frame = exposure.equalize_hist(zero_frame)
 
-    fig, ax = plt.subplots()
-    # Plot zero frame and the box
-    plt.imshow(zero_frame, cmap='gray')
-    plt.plot([box[0, 0], box[1, 0]], [box[0, 1], box[1, 1]], 'r-')
-    plt.plot([box[1, 0], box[2, 0]], [box[1, 1], box[2, 1]], 'r-')
-    plt.plot([box[2, 0], box[3, 0]], [box[2, 1], box[3, 1]], 'r-')
-    plt.plot([box[3, 0], box[0, 0]], [box[3, 1], box[0, 1]], 'r-')
-    plt.title('Zero Frame with Estimated Box')
-
-    # Wait for user to press enter to close the figure
-    def on_key(event):
-        if event.key == 'enter':
-            plt.close(fig)
-        return box
-
-
-    print('waerara')
-    fig.canvas.mpl_connect('key_press_event', on_key)
+    _, ax = plt.subplots()
+    selector = BoxSelector(ax, zero_frame, box)
     plt.show()
 
+    return selector.box
 
-    # Initialize the box list
-    selected_box = []
 
-    # Function to update the plot with the selected points
-    def onclick(event):
-        if len(selected_box) < 4:
-            selected_box.append([event.xdata, event.ydata])
-            plt.scatter(event.xdata, event.ydata, c='red')
-            plt.draw()
-        if len(selected_box) == 4:
-            fig.canvas.mpl_disconnect(cid)
-            ax.clear()
-            ax.imshow(zero_frame, cmap='gray')
-            ax.plot([selected_box[0][0], selected_box[1][0]], [selected_box[0][1], selected_box[1][1]], 'r-')
-            ax.plot([selected_box[1][0], selected_box[2][0]], [selected_box[1][1], selected_box[2][1]], 'r-')
-            ax.plot([selected_box[2][0], selected_box[3][0]], [selected_box[2][1], selected_box[3][1]], 'r-')
-            ax.plot([selected_box[3][0], selected_box[0][0]], [selected_box[3][1], selected_box[0][1]], 'r-')
-            plt.draw()
-
-    # Plot the zero frame and connect the click event
-    ax.imshow(zero_frame, cmap='gray')
-    cid = fig.canvas.mpl_connect('button_press_event', onclick)
-    plt.title('Click to select the four vertices of the box')
-
-    # Wait for user to press enter to close the figure
-    def on_key(event):
-        if event.key == 'enter':
-            plt.close(fig)
-
-    fig.canvas.mpl_connect('key_press_event', on_key)
-    plt.show()
-
-    # Convert the selected_box list to a numpy array if points were selected
-    if len(selected_box) == 4:
-        box = np.array(selected_box)
-
+def get_box_from_box(box_):
+    rect = cv2.minAreaRect(box_.astype(int))
+    box = cv2.boxPoints(rect)
+    box = np.intp(box)
     return box
-
-    # print("Please select the four vertices of the box in the displayed image.")
-    
-    # # Initialize the box list
-    # selected_box = []
-
-    # # Function to update the plot with the selected points
-    # def onclick(event):
-    #     if len(selected_box) < 4:
-    #         selected_box.append([event.xdata, event.ydata])
-    #         plt.scatter(event.xdata, event.ydata, c='red')
-    #         plt.draw()
-    #     if len(selected_box) == 4:
-    #         fig.canvas.mpl_disconnect(cid)
-    #         ax.clear()
-    #         ax.imshow(zero_frame, cmap='gray')
-    #         ax.plot([selected_box[0][0], selected_box[1][0]], [selected_box[0][1], selected_box[1][1]], 'r-')
-    #         ax.plot([selected_box[1][0], selected_box[2][0]], [selected_box[1][1], selected_box[2][1]], 'r-')
-    #         ax.plot([selected_box[2][0], selected_box[3][0]], [selected_box[2][1], selected_box[3][1]], 'r-')
-    #         ax.plot([selected_box[3][0], selected_box[0][0]], [selected_box[3][1], selected_box[0][1]], 'r-')
-    #         plt.draw()
-
-    # # Plot the zero frame and connect the click event
-    # ax.imshow(zero_frame, cmap='gray')
-    # cid = fig.canvas.mpl_connect('button_press_event', onclick)
-    # plt.title('Click to select the four vertices of the box')
-
-    # # Wait for user to press enter to close the figure
-    # def on_key(event):
-    #     if event.key == 'enter':
-    #         plt.close(fig)
-
-    # fig.canvas.mpl_connect('key_press_event', on_key)
-    # plt.show()
-
-    # # Convert the selected_box list to a numpy array if points were selected
-    # if len(selected_box) == 4:
-    #     box = np.array(selected_box)
-
-    # return box

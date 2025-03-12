@@ -19,7 +19,7 @@ samples = os.listdir(path)
 samples = [sample for sample in samples if os.path.isdir(path + sample)]
 samples = sorted(samples)
 
-samples = ['gem05']
+samples = ['gem08']
 for sample in samples:
     if 'gem' not in sample: continue
     # if sample == 'gem02': continue
