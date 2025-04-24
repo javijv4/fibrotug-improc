@@ -258,8 +258,8 @@ class DSPProtocolTissue:
         bdata = find_boundary(tissue_mesh)
 
         # Save mesh
-        chio.write_mesh(self.mesh_folder + 'fiber', tissue_mesh.points, tissue_mesh.cells[0].data)
-        chio.write_bfile(self.mesh_folder + 'fiber', bdata)
+        chio.write_mesh(self.mesh_folder + 'tissue', tissue_mesh.points, tissue_mesh.cells[0].data)
+        chio.write_bfile(self.mesh_folder + 'tissue', bdata)
 
         # Save data points
         print('Saving fiber data...')
@@ -276,7 +276,6 @@ class DSPProtocolTissue:
         for field in  tissue_mesh.cell_data:
             chio.write_dfile(self.data_folder + field + '.FE', tissue_mesh.cell_data[field][0])
 
-        self.fiber_mesh = fiber_mesh
         self.tissue_mesh = tissue_mesh
 
         return fiber_mesh, tissue_mesh
