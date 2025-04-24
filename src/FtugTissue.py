@@ -168,66 +168,118 @@ class DSPProtocolTissue:
 
         # Generate mesh and grab node coordinates
         fiber_mask = self.pre_images['fiber_mask']
-        mesh = mask2mesh_only_fibers(tissue_mask, fiber_mask, meshsize=meshsize, subdivide_fibers=True)
-        ij_nodes = np.floor(mesh.points).astype(int)
+        fiber_mesh, tissue_mesh = mask2mesh_only_fibers(tissue_mask, fiber_mask, meshsize=meshsize, subdivide_fibers=True)
+        
 
         # Project data to mesh
+        ij_nodes = np.floor(fiber_mesh.points).astype(int)
         for field in self.pre_images.keys():
             if 'mask' in field:
-                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+                fiber_mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
             else:
-                mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+                fiber_mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]]
         for field in self.post_images.keys():
             if 'mask' in field:
-                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+                fiber_mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
             else:
-                mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+                fiber_mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
 
 
         # Calculate fiber and myofibril vectors
-        pre_fiber_vector = np.array([np.cos(mesh.point_data['pre_fiber_angle']), np.sin(mesh.point_data['pre_fiber_angle'])]).T
-        post_fiber_vector = np.array([np.cos(mesh.point_data['post_fiber_angle']), np.sin(mesh.point_data['post_fiber_angle'])]).T
+        pre_fiber_vector = np.array([np.cos(fiber_mesh.point_data['pre_fiber_angle']), np.sin(fiber_mesh.point_data['pre_fiber_angle'])]).T
+        post_fiber_vector = np.array([np.cos(fiber_mesh.point_data['post_fiber_angle']), np.sin(fiber_mesh.point_data['post_fiber_angle'])]).T
 
-        mesh.point_data['pre_fiber_vector'] = np.hstack([pre_fiber_vector, np.zeros((pre_fiber_vector.shape[0], 1))])
-        mesh.point_data['post_fiber_vector'] = np.hstack([post_fiber_vector, np.zeros((post_fiber_vector.shape[0], 1))])
+        fiber_mesh.point_data['pre_fiber_vector'] = np.hstack([pre_fiber_vector, np.zeros((pre_fiber_vector.shape[0], 1))])
+        fiber_mesh.point_data['post_fiber_vector'] = np.hstack([post_fiber_vector, np.zeros((post_fiber_vector.shape[0], 1))])
 
         # Fiber density to elements
-        midpoints = np.mean(mesh.points[mesh.cells[0].data], axis=1)
+        midpoints = np.mean(fiber_mesh.points[fiber_mesh.cells[0].data], axis=1)
         ij_midnodes = np.floor(midpoints).astype(int)
 
         # Remove any fiber density outside the fiber mask
-        pre_elem_fib_rho = np.ones(mesh.cells[0].data.shape[0])
-        mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
+        pre_elem_fib_rho = np.ones(fiber_mesh.cells[0].data.shape[0])
+        fiber_mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
         post_elem_fib_rho = self.post_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
-        mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
+        fiber_mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
 
         # Adjust to real dimensions
-        mesh.points = mesh.points * pixel_size
+        fiber_mesh.points = fiber_mesh.points * pixel_size
 
         # Find boundary
-        bdata = find_boundary(mesh)
+        bdata = find_boundary(fiber_mesh)
 
         # Save mesh
-        chio.write_mesh(self.mesh_folder + 'fiber', mesh.points, mesh.cells[0].data)
+        chio.write_mesh(self.mesh_folder + 'fiber', fiber_mesh.points, fiber_mesh.cells[0].data)
         chio.write_bfile(self.mesh_folder + 'fiber', bdata)
 
         # Save data points
         print('Saving fiber data...')
-        for field in  mesh.point_data:
+        for field in  fiber_mesh.point_data:
             if 'fiber' not in field:
                 continue
             print(field)
             if 'vector' in field:
-                aux = np.array([mesh.point_data[field][:,1], -mesh.point_data[field][:,0]]).T
-                save = np.hstack([mesh.point_data[field][:,0:2], aux])
+                aux = np.array([fiber_mesh.point_data[field][:,1], -fiber_mesh.point_data[field][:,0]]).T
+                save = np.hstack([fiber_mesh.point_data[field][:,0:2], aux])
                 chio.write_dfile(self.data_folder + field + '.FE', save)
             else:
-                chio.write_dfile(self.data_folder + field + '.FE', mesh.point_data[field])
-        for field in  mesh.cell_data:
-            chio.write_dfile(self.data_folder + field + '.FE', mesh.cell_data[field][0])
+                chio.write_dfile(self.data_folder + field + '.FE', fiber_mesh.point_data[field])
+        for field in  fiber_mesh.cell_data:
+            chio.write_dfile(self.data_folder + field + '.FE', fiber_mesh.cell_data[field][0])
 
-        self.mesh = mesh
-        return mesh
+        self.fiber_mesh = fiber_mesh
+
+
+        # Project data to mesh
+        ij_nodes = np.floor(tissue_mesh.points).astype(int)
+        for field in self.pre_images.keys():
+            if 'mask' in field:
+                tissue_mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                tissue_mesh.point_data['pre_' + field] = self.pre_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+        for field in self.post_images.keys():
+            if 'mask' in field:
+                tissue_mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]].astype(int)
+            else:
+                tissue_mesh.point_data['post_' + field] = self.post_images[field][ij_nodes[:,0], ij_nodes[:,1]]
+
+
+        # Calculate  myofibril vectors
+        pre_actin_vector = np.array([np.cos(tissue_mesh.point_data['pre_actin_angle']), np.sin(tissue_mesh.point_data['pre_actin_angle'])]).T
+        post_actin_vector = np.array([np.cos(tissue_mesh.point_data['post_actin_angle']), np.sin(tissue_mesh.point_data['post_actin_angle'])]).T
+
+        tissue_mesh.point_data['pre_actin_vector'] = np.hstack([pre_actin_vector, np.zeros((pre_actin_vector.shape[0], 1))])
+        tissue_mesh.point_data['post_actin_vector'] = np.hstack([post_actin_vector, np.zeros((post_actin_vector.shape[0], 1))])
+
+        # Adjust to real dimensions
+        tissue_mesh.points = tissue_mesh.points * pixel_size
+
+        # Find boundary
+        bdata = find_boundary(tissue_mesh)
+
+        # Save mesh
+        chio.write_mesh(self.mesh_folder + 'fiber', tissue_mesh.points, tissue_mesh.cells[0].data)
+        chio.write_bfile(self.mesh_folder + 'fiber', bdata)
+
+        # Save data points
+        print('Saving fiber data...')
+        for field in  tissue_mesh.point_data:
+            if 'fiber' in field:
+                continue
+            print(field)
+            if 'vector' in field:
+                aux = np.array([tissue_mesh.point_data[field][:,1], -tissue_mesh.point_data[field][:,0]]).T
+                save = np.hstack([tissue_mesh.point_data[field][:,0:2], aux])
+                chio.write_dfile(self.data_folder + field + '.FE', save)
+            else:
+                chio.write_dfile(self.data_folder + field + '.FE', tissue_mesh.point_data[field])
+        for field in  tissue_mesh.cell_data:
+            chio.write_dfile(self.data_folder + field + '.FE', tissue_mesh.cell_data[field][0])
+
+        self.fiber_mesh = fiber_mesh
+        self.tissue_mesh = tissue_mesh
+
+        return fiber_mesh, tissue_mesh
 
 
     def generate_mesh(self, meshsize=5, pixel_size=0.390*1e-3, use_fiber_mask=False, add_posts=False, subdivide_fibers=False):
@@ -991,10 +1043,11 @@ class FtugTissue:
                 pass
 
         print('Processing DSP')
-        if mask_method == 1:
-            self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask)
-        elif mask_method == 2:
-            self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask, self.fiber_mask)
+        # if mask_method == 1:
+        #     self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask)
+        # elif mask_method == 2:
+        #     self.dsp_mask = dspproc.get_dsp_mask(self.dsp_image, self.tissue_mask, self.fiber_mask)
+        self.dsp_mask = dspproc.get_dsp_mask_interactive(self.dsp_image, self.tissue_mask, self.fiber_mask)
 
 
         self.dsp_density = dspproc.process_dsp(self.dsp_mask, method=method)
@@ -1087,12 +1140,17 @@ class FtugTissue:
         plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=180)
 
         plt.figure(3, clear=True)
-        plt.imshow(self.fiber_density, cmap='viridis')
+        rho = self.fiber_density.copy()
+        rho[rho<0.2] = np.nan
+        plt.imshow(self.fiber_image, cmap='gray')
+        plt.imshow(rho, cmap='viridis', vmin=0, vmax=1)
         plt.axis('off')
-        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=180, pad_inches=0)
 
         plt.figure(4, clear=True)
-        plt.imshow(self.fiber_angle, cmap='RdBu', vmin=-np.pi/4, vmax=np.pi/4)
+        fiber_angle_aux = self.fiber_angle.copy()
+        plt.imshow(self.fiber_image, cmap='gray')
+        plt.imshow(fiber_angle_aux, cmap='berlin', vmin=-np.pi/4, vmax=np.pi/4)
         plt.axis('off')
         plt.savefig(folder + 'fiber_angle.png', bbox_inches='tight', dpi=180)
 
@@ -1121,9 +1179,12 @@ class FtugTissue:
         plt.savefig(folder + 'actin_density.png', bbox_inches='tight', dpi=180)
 
         plt.figure(4, clear=True)
-        plt.imshow(self.actin_angle, cmap='RdBu', vmin=-np.pi/4, vmax=np.pi/4)
+        actin_angle_aux = self.actin_angle.copy()
+        actin_angle_aux[self.actin_mask==0] = np.nan
+        plt.imshow(self.actin_image, cmap='gray')
+        plt.imshow(actin_angle_aux, cmap='berlin', vmin=-np.pi/4, vmax=np.pi/4)
         plt.axis('off')
-        plt.savefig(folder + 'actin_angle.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'actin_angle.png', bbox_inches='tight', dpi=180, pad_inches=0)
 
         plt.figure(5, clear=True)
         plt.imshow(self.actin_dispersion, alpha=1, cmap='magma', vmin=0, vmax=0.5)
@@ -1146,7 +1207,7 @@ class FtugTissue:
         plt.imshow(dsp_image, cmap='gray')
         plt.imshow(dsp_mask, alpha=0.5, cmap='viridis', vmin=0, vmax=1)
         plt.axis('off')
-        plt.savefig(folder + 'dsp_mask.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'dsp_mask.png', bbox_inches='tight', dpi=180, pad_inches=0)
 
         plt.figure(2, clear=True)
         plt.imshow(dsp_image, cmap='gray')

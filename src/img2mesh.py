@@ -69,6 +69,35 @@ def mask2mesh(mask, meshsize=3, add_post=False):
 
     return tri_mesh
 
+def mask2mesh_rect(mask, meshsize=3, add_post=False):
+    mask = clean_mask(mask)
+    if add_post:
+        mask = add_posts_to_mask(mask)
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(0,0)))
+    props = measure.regionprops(mask.astype(int))[0]
+    bbox = props.bbox
+    corners = np.array([[bbox[0], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]], [bbox[2], bbox[1]]])
+    corners = corners.astype(float)
+    corners[:,0] = corners[:,0] - np.min(corners[:,0]) + 0.5
+
+    # mesh
+    with pygmsh.geo.Geometry() as geom:
+        geom.add_polygon(corners,
+            mesh_size=meshsize,
+        )
+        mesh = geom.generate_mesh()
+
+    points = mesh.points[:,0:2].copy()
+    tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    xyz = tri_mesh.points
+    length = np.max(xyz[:,0]) - np.min(xyz[:,0])
+    xyz[:,0] = (xyz[:,0]-np.min(xyz[:,0]))/length*(length-1)+0.5
+    trimesh.points = xyz
+
+    return tri_mesh
+
 def project_img2_mesh(mesh, img_data):
     ij_nodes = np.floor(mesh.points).astype(int)
 
@@ -448,6 +477,8 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     mesh_tissue_mask = tissue_mask_og.astype(int)
     mesh_tissue_mask = normalize_image(transform.rescale(mesh_tissue_mask, rescale))
     mesh_tissue_mask = morphology.binary_closing(mesh_tissue_mask, footprint=morphology.disk(2))
+    mesh_tissue_mask[:,0] = 0
+    mesh_tissue_mask[:,-1] = 0
 
     mask = clean_mask(mesh_tissue_mask)
     mask[0:10] = 0
@@ -513,7 +544,7 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     # Plot boundary and holes
     fig, ax = plt.subplots()
-    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r-', linewidth=2, label='Boundary')
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.', linewidth=2, label='Boundary')
     for hole in holes:
         ax.plot(hole[:, 1], hole[:, 0], 'b-', linewidth=1, label='Hole')
     ax.set_aspect('equal')
@@ -549,6 +580,10 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     _, bfaces = get_surface_mesh(tri_mesh)
 
     io.write('check.vtu', tri_mesh)
+
+    if np.sum(fiber_mask_og) == 0:
+        tri_mesh.points = tri_mesh.points/rescale
+        return tri_mesh, None, None
 
     # Obtaining mask of fiber elements
     midpoints = np.mean(xyz[ien], axis=1)
@@ -647,7 +682,6 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
 
 
-
 def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, add_posts=False, subdivide_fibers=False):
     rescaled_meshsize = meshsize*rescale
 
@@ -738,14 +772,12 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
         geom.boolean_fragments(tissue, cuts)
 
-        mesh = geom.generate_mesh()
+        mesh = geom.generate_mesh(verbose=True)
 
     points = mesh.points[:,0:2]
     tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
     xyz = tri_mesh.points
     ien = tri_mesh.cells_dict['triangle']
-
-    print(np.min(xyz[:,0]), np.max(xyz[:,0]))
     
     # Obtaining mask of fiber elements
     midpoints = np.mean(xyz[ien], axis=1)
@@ -830,7 +862,22 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     # Dummy process to get rid of isolated points
     fiber_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
 
-    return fiber_mesh
+    # Create tissue mesh
+
+    with pygmsh.occ.Geometry() as geom:
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize*2
+        )
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tissue_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    tissue_mesh.points = tissue_mesh.points/rescale
+
+
+    return fiber_mesh, tissue_mesh
 
 
 def get_surface_mesh(mesh):

@@ -16,6 +16,7 @@ from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import butter, filtfilt, windows
 from matplotlib.widgets import PolygonSelector, RectangleSelector
+from matplotlib.widgets import Slider
 
 def estimate_tissue_rectangle(img, plot=False):
 
@@ -44,7 +45,7 @@ def estimate_tissue_rectangle(img, plot=False):
         portion = np.sum(binary)/binary.size
         mult -= 0.1
         if mult < 0:
-            raise ValueError('Could not find a good threshold')
+            return #ValueError('Could not find a good threshold')
 
 
 
@@ -82,9 +83,9 @@ def estimate_tissue_rectangle(img, plot=False):
     # Sanity checks
     aspect_ratio = length / width
     if aspect_ratio < 1.5:
-        raise ValueError('The aspect ratio is too small')
+        return
     if length < 500 or length > 700:
-        raise ValueError('The length of the box is out of bounds')
+        return
 
 
     return box
@@ -183,10 +184,46 @@ def find_tissue_rotation(box, zero_frame):
         return mean_min_val
 
     # Use a minimization algorithm to find the best angle
-    result = minimize(objective_function, initial_angle, bounds=[(initial_angle - np.pi / 4, initial_angle + np.pi / 4)])
+    result = minimize(objective_function, initial_angle, method='Nelder-Mead', bounds=[(initial_angle - np.pi / 4, initial_angle + np.pi / 4)])
     best_angle = result.x[0]
 
     return best_angle
+
+def interactive_tissue_rotation(zero_frame, initial_angle):
+    zero_frame = exposure.equalize_hist(zero_frame)
+    fig, ax = plt.subplots()
+    ax_slider = plt.axes([0.1, 0.1, 0.8, 0.03])
+    
+    ax.vlines(np.arange(0, zero_frame.shape[1], 100), 0, zero_frame.shape[0], color='r', lw=1)
+    ax.hlines(np.arange(0, zero_frame.shape[0], 100), 0, zero_frame.shape[1], color='r', lw=1)
+
+    val = np.mean(zero_frame)
+    rotated_img = transform.rotate(zero_frame, np.rad2deg(initial_angle), cval=val)
+    img_display = ax.imshow(rotated_img, cmap='gray')
+    ax.set_title('Adjust the rotation angle')
+    ax.axis('off')
+
+    slider = Slider(ax_slider, 'Angle', initial_angle - np.pi / 4, initial_angle + np.pi / 4, valinit=initial_angle)
+
+    def update(val):
+        angle = slider.val
+        rotated_img = transform.rotate(zero_frame, np.rad2deg(angle), cval=val)
+        img_display.set_data(rotated_img)
+        fig.canvas.draw_idle()
+
+    slider.on_changed(update)
+
+    def on_key(event):
+        if event.key == 'enter':
+            plt.close(fig)
+
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    plt.show()
+
+    best_angle = slider.val
+
+    return best_angle
+
 
 
 def get_mask(diff, xlim_l, xlim_r, rescale=3):
@@ -219,7 +256,14 @@ def get_mask(diff, xlim_l, xlim_r, rescale=3):
 
 
 def correct_by_rest_position(points, left_or_right, bins=128):
-    counts, pos = np.histogram(points, bins=bins)
+    maxv = np.max(points)
+    minv = np.min(points)
+    mag = maxv - minv
+    if left_or_right == 'left':
+        maxv = maxv - mag/2
+    else:
+        minv = minv + mag/2
+    counts, pos = np.histogram(points, bins=bins, range=(minv, maxv))
     rest_val = pos[np.argmax(counts)]
     close_val = points[np.argmin(np.abs(points - rest_val))]
 
@@ -343,7 +387,8 @@ def get_displacements_3(all_frame_vals, zero_frame, rescale=4):
 
 
     # Define the Butterworth filter
-    b, a = butter(N=4, Wn=0.05, btype='low', analog=False)
+    displacements = get_displacements_from_traces(frame_peaks)
+    b, a = butter(N=4, Wn=0.08, btype='low', analog=False)
 
     smooth_curves = np.zeros_like(frame_peaks)
     for i in range(4):
@@ -367,24 +412,22 @@ def get_displacements_3(all_frame_vals, zero_frame, rescale=4):
 
 
 
-def get_displacements_4(all_frame_vals, zero_frame, rescale=4):
-    xlim_l, xlim_r = select_post_area(zero_frame, all_frame_vals)
-    # print(xlim_l, xlim_r)
-    # xlim_l = (0.2557427258805513, 0.28024502297090353)
-    # xlim_r = (0.7840735068912711, 0.8284839203675345)
-
+def get_displacements_4(all_frame_vals, xlim_l, xlim_r, rescale=4):
+    print(xlim_l, xlim_r)
     # Apply a low-pass filter to all_frame_vals    
-    arr = filters.sobel(filters.unsharp_mask(all_frame_vals, radius=1, amount=5), axis=1)
+    arr = transform.rescale(all_frame_vals, rescale, order=3, mode='reflect', anti_aliasing=False)
+    arr = filters.sobel(filters.unsharp_mask(arr, radius=2, amount=20), axis=1)
+    arr = filters.gaussian(arr, sigma=2)
     # arr = np.gradient(all_frame_vals, axis=1)
     arr = np.abs(arr)
-    half = arr.shape[1]//2*rescale
+    half = arr.shape[1]//2
 
-    arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
+    # arr = transform.rescale(arr, rescale, order=3, mode='reflect', anti_aliasing=False)
 
-    g = windows.gaussian(1001, 3*rescale)
+    g = windows.gaussian(1001,5*rescale)
     gfunc = interp1d(np.arange(0, len(g), 1)-len(g)//2, g, fill_value=0, bounds_error=False)
 
-    frame_peaks = np.zeros([arr.shape[0], 4])
+    frame_peaks = np.zeros([arr.shape[0], 2])
     x = np.linspace(0, 1, arr.shape[1])
     weights = np.zeros(len(x))
     weights[(x>xlim_l[0])*(x<xlim_l[1])] = 1
@@ -404,18 +447,25 @@ def get_displacements_4(all_frame_vals, zero_frame, rescale=4):
 
         peaks_left = peaks_left[np.argmax(peaks_left_value)]
         peaks_right = peaks_right[np.argmax(peaks_right_value)]
-        peaks = np.array([peaks_left, peaks_left, peaks_right, peaks_right])
+        peaks = np.array([peaks_left, peaks_right])
         frame_peaks[i] = peaks
-        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1]) + gfunc(x-peaks[2]) + gfunc(x-peaks[3])
-
+        weights = gfunc(x-peaks[0]) + gfunc(x-peaks[1])
+        # plt.plot(aux)
+        # plt.plot(peaks, aux[peaks], 'ro')
 
     # Define the Butterworth filter
-    b, a = butter(N=4, Wn=0.05, btype='low', analog=False)
+    displacements = get_displacements_from_traces(frame_peaks.T)
+    if np.max(displacements) < 2*rescale:
+        Wn = 0.03
+    else:
+        Wn = 0.08
+
+    b, a = butter(N=4, Wn=Wn, btype='low', analog=False)
 
     smooth_curves = np.zeros_like(frame_peaks)
-    for i in range(4):
+    for i in range(2):
         curve = frame_peaks[:, i]
-        side = 'left' if i < 2 else 'right'
+        side = 'left' if i == 0 else 'right'
 
         # Apply the filter to the curve
         smooth_curve = filtfilt(b, a, curve)
@@ -428,8 +478,9 @@ def get_displacements_4(all_frame_vals, zero_frame, rescale=4):
     # Resample the curves
     f = interp1d(np.linspace(0, 1, smooth_curves.shape[0]), smooth_curves, axis=0)
     smooth_curves = f(np.linspace(0, 1, all_frame_vals.shape[0]))
+    # smooth_curves = frame_peaks / rescale
 
-    return smooth_curves[:,0], smooth_curves[:,1], smooth_curves[:,2], smooth_curves[:,3]
+    return smooth_curves[:,0], smooth_curves[:,1]
 
 
 def find_traces(arr, rescale, half, xlim_l, xlim_r, reverse=False):
@@ -443,8 +494,6 @@ def find_traces(arr, rescale, half, xlim_l, xlim_r, reverse=False):
     weights[(x>xlim_l[0])*(x<xlim_l[1])] = 1
     weights[(x>xlim_r[0])*(x<xlim_r[1])] = 1
     weights = gaussian_filter1d(weights, 1*rescale)
-    plt.plot(weights)
-    plt.show()
     weights0 = weights.copy()
     x = np.arange(0, arr.shape[1], 1)
 
@@ -472,7 +521,6 @@ def find_traces(arr, rescale, half, xlim_l, xlim_r, reverse=False):
     regularity = np.zeros(4)
     for i in range(4):
         individual_peaks = find_individual_peaks(frame_peaks[:, i])
-        print(len(individual_peaks))
         if len(individual_peaks) == 0:
             regularity[i] = np.nan
             continue
@@ -511,8 +559,9 @@ def check_peak_traces(frame_peaks, frame_peaks_r):
         return frame_peaks_r
 
 def select_post_area(img, all_frame_vals):
+    img = exposure.equalize_hist(img)
     img_aux = np.vstack([img, 1-all_frame_vals])
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(img_aux, cmap='gray')
     ax.axis('off')
     ax.set_title('Select left post area and press Enter')
@@ -539,7 +588,7 @@ def select_post_area(img, all_frame_vals):
 
     x_min1, x_max1 = int(rect_selector.extents[0]), int(rect_selector.extents[1])
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(img_aux, cmap='gray')
     ax.axis('off')
     ax.set_title('Select right post area and press Enter')
@@ -619,7 +668,7 @@ def get_displacements_2(all_frame_vals, rescale=4):
 
 
 def check_traces(traces):
-    strikes = np.zeros(4, dtype=int)
+    strikes = np.zeros(len(traces), dtype=int)
 
     point_1_left, point_2_left, point_1_right, point_2_right = traces
 
@@ -683,18 +732,62 @@ def check_traces(traces):
     return point_1_left, point_2_left, point_1_right, point_2_right
 
 
+def check_traces_2(traces):
+    ntraces = len(traces)
+    displacements = get_displacements_from_traces(traces)
+
+    # Normalize the displacements
+    for i in range(ntraces):
+        displacements[i] = (displacements[i] - np.min(displacements[i])) / (np.max(displacements[i]) - np.min(displacements[i]))
+
+    irregularity = np.zeros(ntraces)
+    # Check how regular the traces are
+    for i in range(ntraces):
+        trace = traces[i]
+        if np.max(trace)-np.min(trace) < 0.3:
+            irregularity[i] = 1e6
+            continue
+            
+        individual_peaks = find_individual_peaks(displacements[i])
+        if len(individual_peaks) == 0:
+            irregularity[i] = 1e6
+            continue
+        
+        if np.min(individual_peaks) > 0.3:
+            irregularity[i] = 1e6
+            continue
+        if np.max(individual_peaks) < 0.7:
+            irregularity[i] = 1e6
+            continue
+
+        individual_peaks = np.array(individual_peaks)
+        if len(individual_peaks) > 5:
+            individual_peaks = individual_peaks[1:-1]
+        temporal_std = np.std(individual_peaks, axis=0)
+        irregularity[i] = np.mean(temporal_std)
+
+        # plt.figure()
+        # plt.plot(individual_peaks.T)
+
+    # Return the traces with the lowest irregularity
+    return traces[np.argmin(irregularity)], np.argmin(irregularity)
+    
+
 def find_individual_peaks(trace):
-    prominence = (np.max(trace) - np.min(trace))*0.5
-    peaks, _ = find_peaks(trace, prominence=prominence, width=10)
+    aux_trace = trace[len(trace)//4:3*len(trace)//4]
+    prominence = (np.max(aux_trace) - np.min(aux_trace))*0.4
+    peaks, props = find_peaks(trace, prominence=prominence, width=5)
     if len(peaks) < 3:
         return []
-    rate = np.mean(np.diff(peaks))
+    rate = np.mean(np.diff(props['left_ips']))
     width = int(rate)
+    left_side = props['left_ips'] - props['left_bases']
+    left_side = np.mean(left_side)
 
     # Split mean trace into individual peaks centered in the peaks
     individual_peaks = []
     for i in range(len(peaks)):
-        start = int(peaks[i]) - int(width/4)
+        start = int(props['left_ips'][i]) - int(left_side)
         end = start + width
         if start < 0: continue
         if end > len(trace): break
@@ -702,6 +795,42 @@ def find_individual_peaks(trace):
         individual_peaks.append(peak_segment)
 
     return individual_peaks
+
+
+def get_best_trace(traces):
+    # Grab best trace
+    trace, which = check_traces_2(traces)
+    if which == 0:
+        displacement = trace - np.min(trace)
+    elif which == 1:
+        displacement = -(trace - np.max(trace))
+
+    prominence = (np.max(displacement) - np.min(displacement))*0.5
+    peaks_mean, prop_mean = find_peaks(displacement, prominence=prominence, width=5, distance=10)   
+    if len(peaks_mean) < 1:
+        return np.zeros_like(displacement), np.zeros_like(displacement), 0, np.zeros_like(displacement)
+    rate_mean = np.mean(np.diff(peaks_mean))
+    width = int(rate_mean)
+
+    # Split mean displacement into individual peaks centered in the peaks
+    individual_peaks = []
+    for i in range(len(peaks_mean)):
+        start = int(prop_mean['left_ips'][i]) - int(width/4)
+        end = start + width
+        if start < 0: continue
+        if end > len(displacement): break
+        peak_segment = displacement[start:end]
+        individual_peaks.append(peak_segment)
+
+    # Get a mean individual peak
+    mean_individual_peak = np.mean(individual_peaks, axis=0)
+
+    # Making sure the curve is zero at the beggining and at the end
+    x=np.linspace(0,1,len(mean_individual_peak))
+    weight = ((np.tanh((x-0.1)*40)+1)/2)*((np.tanh((-x+0.9)*40)+1)/2)
+
+    return mean_individual_peak*weight, traces[which], which, individual_peaks
+
 
 def get_mean_trace(traces):
     point_1_left, point_2_left, point_1_right, point_2_right = traces
@@ -715,6 +844,8 @@ def get_mean_trace(traces):
 
     prominence = (np.max(mean_trace) - np.min(mean_trace))*0.5
     peaks_mean, prop_mean = find_peaks(mean_trace, prominence=prominence, width=10)
+    if len(peaks_mean) < 3:
+        return np.zeros_like(mean_trace), np.zeros_like(mean_trace), np.zeros_like(mean_trace)
     rate_mean = np.mean(np.diff(peaks_mean))
     width = int(rate_mean)
 
@@ -739,26 +870,40 @@ def get_mean_trace(traces):
 
 
 def get_tissue_width(values, traces, ls, plot=False):
-    point_1_left, point_2_left, point_1_right, point_2_right = traces
+    if len(traces) == 4:
+        point_1_left, point_2_left, point_1_right, point_2_right = traces
 
-    if np.any(np.isnan(point_1_left)):
-        middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
-    elif np.any(np.isnan(point_2_left)):
-        middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
-    elif np.any(np.isnan(point_1_right)):
-        middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
-    elif np.any(np.isnan(point_2_right)):
-        middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
-    else:
-        middle_tissue = np.nanmean(traces, axis=0)
-    middle_tissue = int(np.mean(middle_tissue))
+        if np.any(np.isnan(point_1_left)):
+            middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
+        elif np.any(np.isnan(point_2_left)):
+            middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
+        elif np.any(np.isnan(point_1_right)):
+            middle_tissue = np.nanmean([point_1_left, point_2_right], axis=0)
+        elif np.any(np.isnan(point_2_right)):
+            middle_tissue = np.nanmean([point_2_left, point_1_right], axis=0)
+        else:
+            middle_tissue = np.nanmean(traces, axis=0)
+        middle_tissue = int(np.mean(middle_tissue))
+
+    elif len(traces) == 2:
+        middle_tissue = int(np.mean([traces[0], traces[1]]))
 
     mid_values = values[:, :, middle_tissue]
     mid_values = (mid_values - mid_values.min()) / (mid_values.max() - mid_values.min())
 
-    arr = filters.sobel(filters.unsharp_mask(mid_values, radius=1, amount=5), axis=1)
+    arr = filters.sobel(filters.unsharp_mask(mid_values, radius=5, amount=10), axis=1)
     arr = filters.gaussian(np.abs(arr), sigma=2)
-    mask = arr > filters.threshold_minimum(arr)
+    arr = np.abs(filters.sobel(arr))
+
+    mult = 1.0
+    mask_size = 0
+    while mask_size < arr.size//6:
+        mask = arr > filters.threshold_otsu(arr)*mult
+        mask = morphology.binary_closing(mask, footprint=morphology.disk(10))
+        mask_size = np.sum(mask)
+        mult -= 0.1
+        if mult < 0:
+            raise ValueError('Could not find a good threshold')
 
     # Label connected regions of the mask
     labeled_mask = measure.label(mask)
@@ -769,8 +914,18 @@ def get_tissue_width(values, traces, ls, plot=False):
 
     # Create a mask for the largest connected component
     mask = labeled_mask == largest_region.label
-
     mask = morphology.binary_closing(mask, footprint=morphology.disk(10))
+
+    mask = filters.gaussian(mask, 5) > 0.5
+
+    # Need to close all the holes in the mask
+    aux_mask = np.pad(mask, 1, mode='constant')
+    aux_mask[0] = 1
+    
+    seed = np.copy(aux_mask)
+    seed[1:-1, 1:-1] = aux_mask.max()
+    aux_mask = morphology.reconstruction(seed, aux_mask, method='erosion')
+    mask = aux_mask[1:-1, 1:-1]
 
     mask = mask.astype(int) - morphology.binary_erosion(mask, footprint=np.ones((1,3), dtype=int))
     points = np.where(mask==1)[1]
@@ -788,7 +943,7 @@ def get_tissue_width(values, traces, ls, plot=False):
         mask[mask == 0] = np.nan
         plt.imshow(mask, cmap='bwr', vmin=0, vmax=1)
         plt.axis('off')
-
+        
     return width
 
 def analyze_post_displacement(trace, ls):
@@ -797,7 +952,9 @@ def analyze_post_displacement(trace, ls):
     # Find max force
     max_disp = np.max(force)
     # Find peaks
-    peaks, _ = find_peaks(force, height=max_disp/10)
+    prominence = (np.max(force) - np.min(force))*0.4
+    peaks, _ = find_peaks(force, prominence=prominence, width=5, distance=10)
+
     # Find peak times
     peak_times = peaks*dt
 
@@ -829,14 +986,46 @@ def plot_tissue_rotation(zero_frame, angle, sum_values):
     plt.tight_layout()
 
 
+def get_displacements_from_traces(traces, which=None):
+    if len(traces) > 4:
+        traces = np.array(traces).reshape(1, -1)
+
+    ntraces = len(traces)
+    if ntraces == 1:
+        if which == 0:
+            displacements = traces[0] - np.min(traces[0])
+        else:
+            displacements = -(traces[0] - np.max(traces[0]))
+    elif ntraces == 2:
+        displacements = np.zeros_like(traces)
+        for i in range(2):
+            if i == 0:
+                displacements[i] = traces[i] - np.min(traces[i])
+            else:
+                displacements[i] = -(traces[i] - np.max(traces[i]))
+        
+        lss = ['r', 'b']
+    else:
+        displacements = np.zeros_like(traces)
+        for i in range(4):
+            if i < 2:
+                displacements[i] = traces[i] - np.min(traces[i])
+            else:
+                displacements[i] = -(traces[i] - np.max(traces[i]))
+    
+    if which is not None and ntraces > 1:
+        displacements = displacements[which]
+    return displacements
+
+
 def plot_time_traces(traces, zero_frame, box, angle, all_frame_values):
-    point_1_left, point_2_left, point_1_right, point_2_right = traces
-
-    point_1_disp_left = point_1_left - np.min(point_1_left)
-    point_2_disp_left = point_2_left - np.min(point_2_left)
-    point_1_disp_right = -(point_1_right - np.max(point_1_right))
-    point_2_disp_right = -(point_2_right - np.max(point_2_right))
-
+    ntraces = len(traces)
+    displacements = get_displacements_from_traces(traces)
+    if ntraces == 2:
+        lss = ['r', 'b']
+    else:
+        lss = ['r', 'r--', 'b', 'b--']
+            
     ii, jj = get_box_grid(box, angle, center=box.mean(axis=0))
     values = evaluate_image_in_grid(ii, jj, zero_frame)
     values = (values - values.min()) / (values.max() - values.min())
@@ -855,36 +1044,77 @@ def plot_time_traces(traces, zero_frame, box, angle, all_frame_values):
 
     # Big subplot
     ax_big.imshow(1-all_frame_values, aspect='auto', cmap='viridis')
-    ax_big.plot(point_1_left, np.arange(0, point_1_left.shape[0], 1), 'r')
-    ax_big.plot(point_2_left, np.arange(0, point_2_left.shape[0], 1), 'r--')
-    ax_big.plot(point_1_right, np.arange(0, point_1_right.shape[0], 1), 'b')
-    ax_big.plot(point_2_right, np.arange(0, point_2_right.shape[0], 1), 'b--')
+    for i in range(ntraces):
+        ax_big.plot(traces[i], np.arange(0, traces[i].shape[0], 1), lss[i])
     ax_big.axis('off')
 
     # Second subplot
-    ax1.plot(point_1_disp_left, 'r', label='Point 1 Left')
-    ax1.plot(point_2_disp_left, 'r--', label='Point 2 Left')
-    ax1.plot(point_1_disp_right, 'b', label='Point 1 Right')
-    ax1.plot(point_2_disp_right, 'b--', label='Point 2 Right')
+    for i in range(ntraces):
+        ax1.plot(displacements[i], lss[i], label=f'Trace {i}')
     ax1.set_xlabel('Frame')
     ax1.set_ylabel('Displacement (pix)')
 
     plt.tight_layout()
 
-def plot_stack_traces(traces, all_frame_vals, box, angle, peaks, tif_stack):
-    point_1_left, point_2_left, point_1_right, point_2_right = traces
+# def plot_time_traces(traces, zero_frame, box, angle, all_frame_values):
+#     point_1_left, point_2_left, point_1_right, point_2_right = traces
 
-    if np.isnan(point_1_left).any():
-        curve = point_2_left - np.min(point_2_left)
+#     point_1_disp_left = point_1_left - np.min(point_1_left)
+#     point_2_disp_left = point_2_left - np.min(point_2_left)
+#     point_1_disp_right = -(point_1_right - np.max(point_1_right))
+#     point_2_disp_right = -(point_2_right - np.max(point_2_right))
+
+#     ii, jj = get_box_grid(box, angle, center=box.mean(axis=0))
+#     values = evaluate_image_in_grid(ii, jj, zero_frame)
+#     values = (values - values.min()) / (values.max() - values.min())
+#     ii, jj = get_box_grid(box, 0, center=box.mean(axis=0))
+
+#     fig = plt.figure(figsize=(10, 6))
+#     gs = fig.add_gridspec(2, 2, width_ratios=[1, 1])
+
+#     ax0 = fig.add_subplot(gs[0, 0])
+#     ax1 = fig.add_subplot(gs[1, 0])
+#     ax_big = fig.add_subplot(gs[:, 1])
+
+#     ax0.scatter(ii, jj, c=values, s=1, cmap='viridis')
+#     ax0.axis('off')
+#     ax0.set_aspect('equal')
+
+#     # Big subplot
+#     ax_big.imshow(1-all_frame_values, aspect='auto', cmap='viridis')
+#     ax_big.plot(point_1_left, np.arange(0, point_1_left.shape[0], 1), 'r')
+#     ax_big.plot(point_2_left, np.arange(0, point_2_left.shape[0], 1), 'r--')
+#     ax_big.plot(point_1_right, np.arange(0, point_1_right.shape[0], 1), 'b')
+#     ax_big.plot(point_2_right, np.arange(0, point_2_right.shape[0], 1), 'b--')
+#     ax_big.axis('off')
+
+#     # Second subplot
+#     ax1.plot(point_1_disp_left, 'r', label='Point 1 Left')
+#     ax1.plot(point_2_disp_left, 'r--', label='Point 2 Left')
+#     ax1.plot(point_1_disp_right, 'b', label='Point 1 Right')
+#     ax1.plot(point_2_disp_right, 'b--', label='Point 2 Right')
+#     ax1.set_xlabel('Frame')
+#     ax1.set_ylabel('Displacement (pix)')
+
+#     plt.tight_layout()
+
+def plot_stack_traces(traces, best_trace, which_best, all_frame_vals, box, angle, peaks, tif_stack):
+    ntraces = len(traces)
+    if which_best == 0:
+        curve = best_trace - np.min(best_trace)
     else:
-        curve = point_1_left - np.min(point_1_left) 
+        curve = -(best_trace - np.max(best_trace))
 
-    rest_frames= np.where(curve == 0)[0]
-    rest_frame = np.argmin(np.abs(rest_frames - (peaks[0] + peaks[1])//2))
-    rest_idx = rest_frames[rest_frame]
+    if len(peaks) < 2:
+        rest_idx = 0
+        peak_idx = 0
+    else:
+        rest_frames= np.where(curve == 0)[0]
+        rest_frame = np.argmin(np.abs(rest_frames - (peaks[0] + peaks[1])//2))
+        rest_idx = rest_frames[rest_frame]
+        peak_idx = peaks[1]
+
     rest_frame = tif_stack[rest_idx]
-
-    peak_idx = peaks[1]
     peak_frame = tif_stack[peak_idx]
 
     ii, jj = get_box_grid(box, angle, center=box.mean(axis=0))
@@ -903,63 +1133,58 @@ def plot_stack_traces(traces, all_frame_vals, box, angle, peaks, tif_stack):
     arr2 = np.vstack((arr, arr2)).T
     aspect_ratio = arr2.shape[1]/arr2.shape[0]
 
-    f1 = interp1d(np.arange(0, point_1_left.shape[0], 1), point_1_left)
-    f2 = interp1d(np.arange(0, point_2_left.shape[0], 1), point_2_left)
-    f3 = interp1d(np.arange(0, point_1_right.shape[0], 1), point_1_right)
-    f4 = interp1d(np.arange(0, point_2_right.shape[0], 1), point_2_right)
+    funcs = []
+    for i in range(len(traces)):
+        funcs.append(interp1d(np.arange(0, traces[i].shape[0], 1), traces[i]))
+        
     aux = np.arange(0, all_frame_vals.shape[0]-0.5, 0.5)
     aux2 = np.arange(0, all_frame_vals.shape[0]*2-1, 1)
 
+    if ntraces == 2:
+        lss = ['r', 'b']
+    else:
+        lss = ['r', 'r--', 'b', 'b--']
     plt.figure(figsize=(5*aspect_ratio,5))
     plt.imshow(arr2, cmap='gray')
-    plt.plot(aux2 + width, f1(aux), 'r')
-    plt.plot(aux2 + width, f2(aux), 'r--')
-    plt.plot(aux2 + width, f3(aux), 'b')
-    plt.plot(aux2 + width, f4(aux), 'b--')
-    plt.plot(np.arange(0, width//2, 1), np.full(width//2, point_1_left[rest_idx]), 'r')
-    plt.plot(np.arange(0, width//2, 1), np.full(width//2, point_2_left[rest_idx]), 'r--')
-    plt.plot(np.arange(0, width//2, 1), np.full(width//2, point_1_right[rest_idx]), 'b')
-    plt.plot(np.arange(0, width//2, 1), np.full(width//2, point_2_right[rest_idx]), 'b--')
-    plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, point_1_left[peak_idx]), 'r')
-    plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, point_2_left[peak_idx]), 'r--')
-    plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, point_1_right[peak_idx]), 'b')
-    plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, point_2_right[peak_idx]), 'b--')
+    for i in range(len(traces)):
+        plt.plot(aux2+width, funcs[i](aux), lss[i])
+        plt.plot(np.arange(0, width//2, 1), np.full(width//2, traces[i][rest_idx]), lss[i])
+        plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, traces[i][peak_idx]), lss[i])
+    
+    
+    plt.plot(np.arange(0, width//2, 1), np.full(width//2, traces[which_best][rest_idx]), 'k')
+    plt.plot(np.arange(0, width//2, 1)+width//2, np.full(width//2, traces[which_best][peak_idx]), 'k')
+
     plt.axis('off')
 
 
-def plot_traces_and_mean(traces, mean_trace, mean_individual_trace, individual_traces):
-    point_1_left, point_2_left, point_1_right, point_2_right = traces
+def plot_traces_and_mean(traces, mean_trace, which_best, mean_individual_trace, individual_traces):
+    ntraces = len(traces)
+    lss = ['r', 'r--', 'b', 'b--']  
+    best_disp = get_displacements_from_traces(mean_trace, which=which_best)
+    displacements = get_displacements_from_traces(traces)
+    peaks = []
+    for i in range(len(displacements)):
+        prominence = (np.max(displacements[i]) - np.min(displacements[i]))*0.4
+        peaks.append(find_peaks(displacements[i], prominence=prominence)[0])
 
-    point_1_disp_left = point_1_left - np.min(point_1_left)
-    point_2_disp_left = point_2_left - np.min(point_2_left)
-    point_1_disp_right = -(point_1_right - np.max(point_1_right))
-    point_2_disp_right = -(point_2_right - np.max(point_2_right))
-
-    prominence = (np.max(point_1_disp_left) - np.min(point_1_disp_left))*0.4
-    peaks_1_left = find_peaks(point_1_disp_left, prominence=prominence)[0]
-    peaks_2_left = find_peaks(point_2_disp_left, prominence=prominence)[0]
-    peaks_1_right = find_peaks(point_1_disp_right, prominence=prominence)[0]
-    peaks_2_right = find_peaks(point_2_disp_right, prominence=prominence)[0]
-    peaks_mean, prop_mean = find_peaks(mean_trace, prominence=prominence, width=5)
-
+    prominence = (np.max(best_disp) - np.min(best_disp))*0.4
+    peaks_mean, prop_mean = find_peaks(best_disp, prominence=prominence, width=30)
 
     # Combine the two plots in one figure with two subplots
     _, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4), gridspec_kw={'width_ratios': [2.5, 1]})
 
-    frames = np.arange(0, len(mean_trace), 1)
+    frames = np.arange(0, len(best_disp), 1)
     # Right subplot: Displacement traces
-    ax1.plot(frames, point_1_disp_left, 'r', label='Point 1 Left', alpha=0.5)
-    ax1.plot(frames, point_2_disp_left, 'r--', label='Point 2 Left', alpha=0.5)
-    ax1.plot(frames, point_1_disp_right, 'b', label='Point 1 Right', alpha=0.5)
-    ax1.plot(frames, point_2_disp_right, 'b--', label='Point 2 Right', alpha=0.5)
-    ax1.plot(frames, mean_trace, 'k', label='Mean Trace', lw=2)
+    for i in range(ntraces):
+        ax1.plot(frames, displacements[i], lss[i], label=f'Trace {i}', alpha=0.5)
+    ax1.plot(frames, best_disp, 'k', label='Mean Trace', lw=2)
 
     # Add peaks to the plot
-    ax1.plot(peaks_1_left, point_1_disp_left[peaks_1_left], 'rx')
-    ax1.plot(peaks_2_left, point_2_disp_left[peaks_2_left], 'rx')
-    ax1.plot(peaks_1_right, point_1_disp_right[peaks_1_right], 'bx')
-    ax1.plot(peaks_2_right, point_2_disp_right[peaks_2_right], 'bx')
-    ax1.plot(peaks_mean, mean_trace[peaks_mean], 'kx')
+    for i in range(ntraces):
+        ax1.plot(peaks[i], displacements[i][peaks[i]], 'rx')
+        
+    ax1.plot(peaks_mean, best_disp[peaks_mean], 'kx')
 
     ylim = ax1.get_ylim()
     ax1.vlines(prop_mean['left_ips'], ymin=ylim[0], ymax=ylim[1])
@@ -1052,4 +1277,12 @@ def get_box_from_box(box_):
     rect = cv2.minAreaRect(box_.astype(int))
     box = cv2.boxPoints(rect)
     box = np.intp(box)
+
+    length = np.linalg.norm(box[3] - box[0])
+    width = np.linalg.norm(box[1] - box[0])
+    if length < width:
+        length = np.linalg.norm(box[1] - box[0])
+        width = np.linalg.norm(box[2] - box[1])
+        aux_box = np.array([box[0], box[3], box[2], box[1]])
+        box = aux_box
     return box

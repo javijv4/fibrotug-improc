@@ -14,14 +14,19 @@ import meshio as io
 from skimage import io as skio
 
 path = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Tissues/dataset2_2/'
-sim_path = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Simulations/dataset2_2/'
+sim_path = '/home/jilberto/University of Michigan Dropbox/Javiera Jilberto Vallejos/Projects/fibroTUG/DSP/Simulations/3PM/dataset2_2/'
 samples = os.listdir(path)
 samples = [sample for sample in samples if os.path.isdir(path + sample)]
 samples = sorted(samples)
 
-samples = ['gem08']
+
+
+meshsize = 10
+pixel_size = 0.390*1e-3  #mm
+
+samples = ['gem02']
 for sample in samples:
-    if 'gem' not in sample: continue
+    # if 'gem' not in sample: continue
     # if sample == 'gem02': continue
     # if sample == 'gem03': continue
     # if sample == 'gem04': continue
@@ -34,9 +39,6 @@ for sample in samples:
     exp_fldr = tissue_fldr + 'exp/'
     mesh_fldr = sims_fldr + 'mesh/'
     data_fldr = sims_fldr + 'data/'
-
-    meshsize = 5
-    pixel_size = 0.390*1e-3  #mm
 
     pre_fldr = tissue_fldr + 'pre/'
     pre_images = find_images(pre_fldr)
@@ -76,22 +78,22 @@ for sample in samples:
 
 
     # One mesh
-    mesh = dspexp.generate_mesh(meshsize=meshsize, pixel_size=pixel_size,
-                                use_fiber_mask=True, subdivide_fibers=False)
-    io.write('mesh.vtu', mesh)
-    io.write(mesh_fldr + 'mesh.vtu', mesh)
+    # mesh = dspexp.generate_mesh(meshsize=meshsize, pixel_size=pixel_size,
+    #                             use_fiber_mask=False, subdivide_fibers=False)
+    # io.write('mesh.vtu', mesh)
+    # io.write(mesh_fldr + 'mesh.vtu', mesh)
 
-    # # Separated tissue and fiber meshes
+    # Separated tissue and fiber meshes
     # tissue_mesh = dspexp.generate_tissue_mesh(meshsize=meshsize, pixel_size=pixel_size,
     #                                     use_fiber_mask=False)
-    # io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
-    # fiber_mesh = dspexp.generate_fiber_mesh(meshsize=meshsize*2, pixel_size=pixel_size)
-    # io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)
+    fiber_mesh, tissue_mesh = dspexp.generate_fiber_mesh(meshsize=meshsize/2, pixel_size=pixel_size)
+    io.write(mesh_fldr + 'tissue_mesh.vtu', tissue_mesh)
+    io.write(mesh_fldr + 'fiber_mesh.vtu', fiber_mesh)
 
-    # #%% Grab post displacement data
-    import shutil
+    # # # #%% Grab post displacement data
+    # import shutil
 
-    shutil.copyfile(f'{pre_fldr}/day7_post_disp.INIT', f'{data_fldr}/day7_post_disp.INIT')
-    shutil.copyfile(f'{pre_fldr}/day7_ET1_post_disp.INIT', f'{data_fldr}/day7_ET1_post_disp.INIT')
-    shutil.copyfile(f'{pre_fldr}/day7_6hrs_post_disp.INIT', f'{data_fldr}/day7_6hrs_post_disp.INIT')
-    shutil.copyfile(f'{post_fldr}/day9_post_disp.INIT', f'{data_fldr}/day9_post_disp.INIT')
+    # shutil.copyfile(f'{pre_fldr}/day7_post_disp.INIT', f'{data_fldr}/day7_post_disp.INIT')
+    # shutil.copyfile(f'{pre_fldr}/day7_ET1_post_disp.INIT', f'{data_fldr}/day7_ET1_post_disp.INIT')
+    # shutil.copyfile(f'{pre_fldr}/day7_6hrs_post_disp.INIT', f'{data_fldr}/day7_6hrs_post_disp.INIT')
+    # shutil.copyfile(f'{post_fldr}/day9_post_disp.INIT', f'{data_fldr}/day9_post_disp.INIT')
