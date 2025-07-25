@@ -7,6 +7,8 @@ from tqdm import tqdm
 from scipy.spatial import ConvexHull
 from sklearn.decomposition import PCA
 import numpy as np
+from collections import defaultdict
+from matplotlib.patches import Ellipse
 
 params = {'ncells': 80,
         'window': 10,
@@ -32,6 +34,7 @@ def seed_random_cells(bk, bk_dist):
         it = 0
         while loop and it < maxit:
             xcell = np.random.rand()*bksize + params['min_post_distance']
+
             bkx = bk_cell_region[int(np.floor(xcell))]*bk_cell_region[int(np.ceil(xcell))]
             aux = np.arange(len(bkx))[bkx]
             ylims = [aux[0], aux[-1]]
@@ -57,6 +60,40 @@ def seed_random_cells(bk, bk_dist):
     return xycells
 
 
+def seed_random_cells_utc():
+    maxit = 100000
+    ncells = params['ncells']
+
+
+    xycells = np.zeros([ncells, 2])
+    for i in range(ncells):
+        loop = True
+        it = 0
+        while loop and it < maxit:
+            xycell = np.random.rand(2)
+            if i == 0:
+                xycells[i] = xycell
+                break
+
+            dist = np.linalg.norm(xycells[:i] - xycell, axis = 1)
+            if np.min(dist) > params['min_cell_distance']:
+                xycells[i] = xycell
+                loop = False
+            it+=1
+
+        if it == maxit:  # TODO if it fails, decrease the min_cell_distance and retry
+            print('Sedding failed. Cells seeded: ' + str(i))
+            xycells = xycells[0:i]
+            break
+
+    # Rescale to avoid boundary
+    length = 1 - 2* params['min_post_distance']
+    xycells[:,0] = xycells[:,0]*length + params['min_post_distance']
+    xycells[:,1] = xycells[:,1]*length + params['min_post_distance']
+
+    return xycells
+
+
 def get_utc_images(bk):
     i = np.arange(bk.shape[0])
     j = np.arange(bk.shape[1])
@@ -76,6 +113,7 @@ def get_utc_images(bk):
 
 
 def get_utc(ij, axis_dir, trans_dir):
+    ij[:,0] = ij[:,0] - np.min(ij[:,0])
     axis = axis_dir[ij[:,0], ij[:,1]]
     trans = trans_dir[ij[:,0], ij[:,1]]
     utc = np.vstack([axis, trans]).T
@@ -159,7 +197,7 @@ def get_surface_normals(points, ien, vol_elems=None):
     return normal
 
 
-def get_elem_neighbors(ien, cell_number):
+def get_elem_neighbors_old(ien, cell_number):
     neigh_elems = np.zeros([len(ien), 3], dtype=int)
     for e in tqdm(range(len(cell_number))):
         elem_nodes = ien[e]
@@ -171,6 +209,30 @@ def get_elem_neighbors(ien, cell_number):
     neigh_cells = np.zeros_like(neigh_elems) - 1
     neigh_cells[neigh_elems>-1] = cell_number[neigh_elems[neigh_elems>-1]]
 
+    return neigh_elems, neigh_cells
+
+
+def get_elem_neighbors(ien, cell_number):
+    # Build a mapping from node to elements
+
+    node_to_elems = defaultdict(set)
+    for elem_idx, nodes in enumerate(ien):
+        for n in nodes:
+            node_to_elems[n].add(elem_idx)
+
+    neigh_elems = -np.ones((len(ien), 3), dtype=int)
+    for e, elem_nodes in enumerate(ien):
+        neighbors = set()
+        for i in range(3):
+            n1, n2 = elem_nodes[i], elem_nodes[(i+1)%3]
+            # Find elements sharing both nodes (edge)
+            shared = node_to_elems[n1] & node_to_elems[n2]
+            shared.discard(e)
+            if shared:
+                neigh_elems[e, i] = next(iter(shared))
+    neigh_cells = np.full_like(neigh_elems, -1)
+    mask = neigh_elems > -1
+    neigh_cells[mask] = cell_number[neigh_elems[mask]]
     return neigh_elems, neigh_cells
 
 
@@ -301,7 +363,7 @@ def get_connected_boundary(points, max_param, method='major_axis'):
             return center, major_axis
 
         center, major_axis = fit_ellipse(hull.points)
-        major_axis_dist = major_axis@(hull.points-center).T
+        major_axis_dist = major_axis@(points-center).T
         farthest_points = [np.argmin(major_axis_dist), np.argmax(major_axis_dist)]
         neg_length = np.linalg.norm(hull.points[farthest_points[0]]-center)
         pos_length = np.linalg.norm(hull.points[farthest_points[1]]-center)
@@ -333,78 +395,221 @@ def find_connected_nodes(mesh, mask, connected_nodes=np.array([]), method='major
     points = xyz[line_nodes]
 
     if method == 'major_axis':
-        max_param = 0.6
+        max_param = 0.4
     elif method == 'line_normals':
         max_param = np.pi/2*0.93
     else:
         raise ValueError('Method not recognized')
 
     connected_node = get_connected_boundary(points, max_param, method='major_axis')
-    nodes_to_connect = line_nodes[connected_node]
-    connected_nodes = np.append(connected_nodes, nodes_to_connect)
+    nodes_to_disconnect = line_nodes[~connected_node]
+    connected_nodes[nodes_to_disconnect] = False
 
     return connected_nodes
 
 
 
-def make_discontinous_continuous_mesh(mesh, mask, connected_nodes, map_new_nodes = None):
+def make_discontinous_continuous_mesh(mesh, cell_number, connected_nodes):
     xyz = mesh.points
     ien = mesh.cells[0].data
+    ncells = np.max(cell_number)
 
-    # Find intersection nodes
-    cell_elems = np.where(mask)
-    not_cell_elems = np.where(~mask)
-    cell_nodes = np.unique(ien[cell_elems])
-    not_cell_nodes = np.unique(ien[not_cell_elems])
-    inter_nodes = np.intersect1d(cell_nodes, not_cell_nodes)
+    inter_nodes = []
+    for i in range(1, ncells):
+        mask = cell_number == i
 
-    # Delete connected nodes from inter nodes
+        # Find intersection nodes
+        cell_elems = np.where(mask)
+        not_cell_elems = np.where(~mask)
+        cell_nodes = np.unique(ien[cell_elems])
+        not_cell_nodes = np.unique(ien[not_cell_elems])
+        inter_nodes.append(np.intersect1d(cell_nodes, not_cell_nodes))
+    
+    inter_nodes = np.unique(np.concatenate(inter_nodes))
     inter_nodes = np.setdiff1d(inter_nodes, connected_nodes)
 
     # Find elements
-    inter_elems = np.where(np.any(np.isin(ien, inter_nodes), axis=1))[0]
-    cell_elems = np.intersect1d(inter_elems, cell_elems)
-    not_cell_elems = np.intersect1d(inter_elems, not_cell_elems)
+    new_xyz = np.copy(xyz)
+    map_new_nodes = np.arange(len(new_xyz))
 
-    new_xyz = np.vstack([xyz, xyz[inter_nodes]])
-    if map_new_nodes is None:
-        map_new_nodes = np.arange(len(new_xyz))
-    else:
-        aux = np.arange(len(new_xyz))
-        aux[:len(map_new_nodes)] = map_new_nodes
-        map_new_nodes = aux
-    map_new_nodes[inter_nodes] = np.arange(len(inter_nodes)) + len(xyz)
-    map_aux = np.arange(len(new_xyz))
-    map_aux[inter_nodes] = np.arange(len(inter_nodes)) + len(xyz)
     new_ien = np.copy(ien)
-    new_ien[not_cell_elems] = map_aux[new_ien[not_cell_elems]]
-    map_new_nodes[map_new_nodes[inter_nodes]] = inter_nodes
+
+    # Build a mapping from node to elements for fast lookup
+    node_to_elems = defaultdict(list)
+    for elem_idx, nodes in enumerate(ien):
+        for n in nodes:
+            node_to_elems[n].append(elem_idx)
+
+    # Precompute cell_number for all elements
+    cell_number_arr = np.asarray(cell_number)
+
+    # For each inter_node, process only once
+    for inter_node in inter_nodes:
+        inter_elems = np.array(node_to_elems[inter_node])
+        cell_ids = cell_number_arr[inter_elems]
+        unique_cells = np.unique(cell_ids)
+
+        if len(unique_cells) <= 1:
+            continue  # skip if not shared by more than one cell
+
+        # Add new node for this inter_node
+        new_xyz = np.vstack([new_xyz, xyz[inter_node]])
+        new_node_idx = len(new_xyz) - 1
+        map_new_nodes[inter_node] = new_node_idx
+        map_new_nodes = np.append(map_new_nodes, inter_node)
+
+        # For each cell except the first, update elements to use the new node index
+        for cell_id in unique_cells[1:]:
+            elems = inter_elems[cell_ids == cell_id]
+            # Replace inter_node with new_node_idx in these elements
+            for elem in elems:
+                new_ien[elem][new_ien[elem] == inter_node] = new_node_idx
 
     new_mesh = io.Mesh(new_xyz, {'triangle': new_ien})
 
     return new_mesh, map_new_nodes
 
 
-def generate_connected_disc_mesh(mesh, cell_number, dsp_density=None):
+# def make_discontinous_continuous_mesh(mesh, mask, connected_nodes, map_new_nodes = None):
+#     # NEED TO DO THIS GLOBALLY!!!
+#     xyz = mesh.points
+#     ien = mesh.cells[0].data
+
+#     # Find intersection nodes
+#     cell_elems = np.where(mask)
+#     not_cell_elems = np.where(~mask)
+#     cell_nodes = np.unique(ien[cell_elems])
+#     not_cell_nodes = np.unique(ien[not_cell_elems])
+#     inter_nodes = np.intersect1d(cell_nodes, not_cell_nodes)
+
+#     # Delete connected nodes from inter nodes
+#     inter_nodes = np.setdiff1d(inter_nodes, connected_nodes)
+
+#     # Find elements
+#     inter_elems = np.where(np.any(np.isin(ien, inter_nodes), axis=1))[0]
+#     cell_elems = np.intersect1d(inter_elems, cell_elems)
+#     not_cell_elems = np.intersect1d(inter_elems, not_cell_elems)
+
+#     new_xyz = np.vstack([xyz, xyz[inter_nodes]])
+#     if map_new_nodes is None:
+#         map_new_nodes = np.arange(len(new_xyz))
+#     else:
+#         aux = np.arange(len(new_xyz))
+#         aux[:len(map_new_nodes)] = map_new_nodes
+#         map_new_nodes = aux
+#     map_new_nodes[inter_nodes] = np.arange(len(inter_nodes)) + len(xyz)
+#     map_aux = np.arange(len(new_xyz))
+#     map_aux[inter_nodes] = np.arange(len(inter_nodes)) + len(xyz)
+#     new_ien = np.copy(ien)
+#     new_ien[not_cell_elems] = map_aux[new_ien[not_cell_elems]]
+#     map_new_nodes[map_new_nodes[inter_nodes]] = inter_nodes
+
+#     new_mesh = io.Mesh(new_xyz, {'triangle': new_ien})
+
+#     return new_mesh, map_new_nodes
+
+
+
+
+def find_connected_nodes_actin(mesh, mask, actin_vector, connected_nodes=np.array([])):
+    xyz = mesh.points
+    ien = mesh.cells[0].data
+
+    # Find cell sarc alignment
+    cell_elems = np.where(mask)
+    ien_cell = ien[cell_elems]
+    cell_nodes = np.unique(ien_cell)
+    cell_center = np.mean(xyz[cell_nodes], axis=0)
+
+    actin_vector = actin_vector[cell_nodes]
+    mean_vector = np.mean(actin_vector, axis=0)
+    mean_vector /= np.linalg.norm(mean_vector)
+
+    # Find nodes in angle
+    tri_elem, line_ien = get_surface_mesh(ien_cell)
+    line_nodes = np.unique(line_ien)
+    points = xyz[line_nodes]
+
+    # Dist along mean vector
+    dist = np.dot(points - cell_center, mean_vector)
+    neg_value = np.min(dist)
+    pos_value = np.max(dist)
+
+    # Normalize dist: -1 at neg_value, 1 at pos_value, 0 at 0
+    norm_dist = np.copy(dist)
+    norm_dist[dist < 0] = (norm_dist[dist < 0] - neg_value) / (0 - neg_value) -1 
+    norm_dist[dist >= 0] = (norm_dist[dist >= 0] - 0) / (pos_value - 0)
+    norm_dist = np.clip(norm_dist, -1, 1)
+
+    # Find connected nodes
+    param = 0.7
+    connected_node = np.abs(norm_dist) > param
+    connected_nodes[line_nodes[connected_node]] = True
+
+    # #%%
+    # import matplotlib.pyplot as plt
+
+    # # Plot all points
+    # plt.scatter(points[:, 0], points[:, 1], c='gray', label='Boundary Points')
+
+    # # Plot cell center
+    # plt.scatter(cell_center[0], cell_center[1], c='black', marker='x', s=100, label='Cell Center')
+
+    # # Plot mean vector
+    # arrow_scale = 0.2 * np.max(np.linalg.norm(points - cell_center, axis=1))
+    # plt.arrow(cell_center[0], cell_center[1],
+    #           mean_vector[0]*arrow_scale, mean_vector[1]*arrow_scale,
+    #           color='green', width=0.0002, head_width=0.001, length_includes_head=True, label='Mean Vector')
+
+    # # Plot connected (red) and disconnected (blue) nodes
+    # plt.scatter(points[connected_node, 0], points[connected_node, 1], c='red', label='Connected Nodes')
+    # plt.scatter(points[~connected_node, 0], points[~connected_node, 1], c='blue', label='Disconnected Nodes')
+
+    # plt.axis('equal')
+    # plt.legend()
+    # plt.title('Cell Boundary Connectivity')
+    # plt.show()
+    # #%%
+
+    return connected_nodes
+
+
+def generate_connected_disc_mesh(mesh, cell_number, dsp_density=None, actin_vector=None):
     map_disp_new_nodes = None
     ncells = np.max(cell_number)
 
-    connected_nodes = np.array([], dtype=int)
+    connected_nodes = np.ones(len(mesh.points), dtype=bool)
     disc_mesh = io.Mesh(mesh.points, mesh.cells)
     for i in range(1, ncells):
         mask = cell_number == i
-        connected_nodes = find_connected_nodes(mesh, mask, connected_nodes)
+        new_connected_nodes = find_connected_nodes(mesh, mask, connected_nodes)
+        connected_nodes = new_connected_nodes * connected_nodes
 
-    connected_nodes = np.unique(connected_nodes)
+    connected_nodes = np.where(connected_nodes)[0]
     if dsp_density is not None:
         dsp_connected = dsp_density[connected_nodes]
         connected = np.random.binomial(1, (dsp_connected+2)/3)
         connected_nodes = connected_nodes[connected==1]
 
 
-    for i in range(1, ncells):
+    disc_mesh, map_new_nodes = make_discontinous_continuous_mesh(disc_mesh, cell_number, connected_nodes, map_new_nodes=map_disp_new_nodes)
+
+
+    # TODO need to generate bdata
+    return disc_mesh, connected_nodes, map_new_nodes
+
+def generate_connected_disc_mesh_actin(mesh, cell_number, actin_vector):
+    ncells = np.max(cell_number)
+
+    connected_nodes = np.zeros(len(mesh.points), dtype=bool)
+    disc_mesh = io.Mesh(mesh.points, mesh.cells)
+    for i in range(0, ncells):
         mask = cell_number == i
-        disc_mesh, map_new_nodes = make_discontinous_continuous_mesh(disc_mesh, mask, connected_nodes, map_new_nodes=map_disp_new_nodes)
+        connected_nodes = find_connected_nodes_actin(mesh, mask, actin_vector, connected_nodes)
+
+    connected_nodes = np.where(connected_nodes)[0]
+
+    disc_mesh, map_new_nodes = make_discontinous_continuous_mesh(disc_mesh, cell_number, connected_nodes)
 
 
     # TODO need to generate bdata
@@ -442,10 +647,11 @@ def get_boundary_mesh(mesh, connected_nodes, disc_mesh):
 def get_line_disc_mesh(cell_disc_mesh, cell_number, boundary_nodes, disc_bdata, map_new_nodes):
     ncells = np.max(cell_number)
 
-    connected_nodes = np.array([], dtype=int)
+    connected_nodes = np.ones(len(cell_disc_mesh.points), dtype=bool)
     for i in range(1, ncells):
         mask = cell_number == i
-        connected_nodes = find_connected_nodes(cell_disc_mesh, mask, connected_nodes)
+        new_connected_nodes = find_connected_nodes(cell_disc_mesh, mask, connected_nodes)
+        connected_nodes = new_connected_nodes * connected_nodes
 
     disc_bnodes = np.unique(disc_bdata[:,1:-1])
     connected_nodes = np.setdiff1d(connected_nodes, disc_bnodes)

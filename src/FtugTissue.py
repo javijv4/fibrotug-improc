@@ -169,7 +169,6 @@ class DSPProtocolTissue:
         # Generate mesh and grab node coordinates
         fiber_mask = self.pre_images['fiber_mask']
         fiber_mesh, tissue_mesh = mask2mesh_only_fibers(tissue_mask, fiber_mask, meshsize=meshsize, subdivide_fibers=True)
-        
 
         # Project data to mesh
         ij_nodes = np.floor(fiber_mesh.points).astype(int)
@@ -251,6 +250,12 @@ class DSPProtocolTissue:
         tissue_mesh.point_data['pre_actin_vector'] = np.hstack([pre_actin_vector, np.zeros((pre_actin_vector.shape[0], 1))])
         tissue_mesh.point_data['post_actin_vector'] = np.hstack([post_actin_vector, np.zeros((post_actin_vector.shape[0], 1))])
 
+        pre_fiber_vector = np.array([np.cos(tissue_mesh.point_data['pre_fiber_angle']), np.sin(tissue_mesh.point_data['pre_fiber_angle'])]).T
+        post_fiber_vector = np.array([np.cos(tissue_mesh.point_data['post_fiber_angle']), np.sin(tissue_mesh.point_data['post_fiber_angle'])]).T
+
+        tissue_mesh.point_data['pre_fiber_vector'] = np.hstack([pre_fiber_vector, np.zeros((pre_fiber_vector.shape[0], 1))])
+        tissue_mesh.point_data['post_fiber_vector'] = np.hstack([post_fiber_vector, np.zeros((post_fiber_vector.shape[0], 1))])
+
         # Adjust to real dimensions
         tissue_mesh.points = tissue_mesh.points * pixel_size
 
@@ -264,17 +269,34 @@ class DSPProtocolTissue:
         # Save data points
         print('Saving fiber data...')
         for field in  tissue_mesh.point_data:
+            field_name = field
             if 'fiber' in field:
-                continue
+                field_name += '_t'
             print(field)
             if 'vector' in field:
                 aux = np.array([tissue_mesh.point_data[field][:,1], -tissue_mesh.point_data[field][:,0]]).T
                 save = np.hstack([tissue_mesh.point_data[field][:,0:2], aux])
-                chio.write_dfile(self.data_folder + field + '.FE', save)
+                chio.write_dfile(self.data_folder + field_name + '.FE', save)
             else:
-                chio.write_dfile(self.data_folder + field + '.FE', tissue_mesh.point_data[field])
+                chio.write_dfile(self.data_folder + field_name + '.FE', tissue_mesh.point_data[field])
         for field in  tissue_mesh.cell_data:
-            chio.write_dfile(self.data_folder + field + '.FE', tissue_mesh.cell_data[field][0])
+            chio.write_dfile(self.data_folder + field_name + '.FE', tissue_mesh.cell_data[field][0])
+
+        # Fiber density to elements
+        midpoints = np.mean(tissue_mesh.points[tissue_mesh.cells[0].data], axis=1)
+        ij_midnodes = np.floor(midpoints / pixel_size).astype(int)
+
+        # Remove any fiber density outside the fiber mask
+        pre_elem_fib_rho = self.pre_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+        tissue_mesh.cell_data['pre_fiber_density_elem'] = [pre_elem_fib_rho]
+        post_elem_fib_rho = self.post_images['fiber_density'][ij_midnodes[:,0], ij_midnodes[:,1]]
+        tissue_mesh.cell_data['post_fiber_density_elem'] = [post_elem_fib_rho]
+
+        for field in  tissue_mesh.cell_data:
+            name = field
+            if 'fiber' in field:
+                name = name + '_t'
+            chio.write_dfile(self.data_folder + name + '.FE', tissue_mesh.cell_data[field][0])
 
         self.tissue_mesh = tissue_mesh
 
@@ -404,6 +426,7 @@ class DSPProtocolTissue:
 
         image = transform.rotate(image, rot)
         image = image[crop[2]:crop[3], crop[0]:crop[1]]
+
         return image
 
 
@@ -593,6 +616,13 @@ class DSPProtocolTissue:
                 img = img.astype(int)
 
             dict_images[name] = img
+
+            if 'angle' in name or 'vector' in name:
+                angle = np.deg2rad(self.rot_crop_params[0])
+                vector = np.array([np.cos(img), np.sin(img)]).T
+                rot_matrix = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+                vector = np.dot(vector, rot_matrix.T)
+                dict_images[name] = np.arctan2(vector[:,:,1], vector[:,:,0]).T
 
             if name == 'fibers' or name == 'actin'  or name == 'dsp':
                 dict_images[name] = normalize_image(img, mask = tissue_mask)
@@ -951,6 +981,10 @@ class FtugTissue:
                 actin_mask.astype(np.int8), check_contrast=False)
         self.actin_mask = actin_mask
 
+        try:
+            self.actin_mask = io.imread(self.tissue_fldr + 'actin_mask.tif')
+        except:
+            self.actin_mask = io.imread(self.tissue_fldr + 'actin_mask_init.tif')
 
     def process_actin(self, force_compute=False):
         if not force_compute:
@@ -1105,19 +1139,19 @@ class FtugTissue:
             plt.figure(1, clear=True)
             plt.imshow(self.fiber_image, cmap='gray')
             plt.axis('off')
-            plt.savefig(folder + 'fiber.png', bbox_inches='tight')
+            plt.savefig(folder + 'fiber.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         if self.actin_image is not None:
             plt.figure(1, clear=True)
             plt.imshow(self.actin_image, cmap='gray')
             plt.axis('off')
-            plt.savefig(folder + 'actin.png', bbox_inches='tight')
+            plt.savefig(folder + 'actin.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         if self.dsp_image is not None:
             plt.figure(1, clear=True)
             plt.imshow(self.dsp_image, cmap='gray')
             plt.axis('off')
-            plt.savefig(folder + 'dsp.png', bbox_inches='tight')
+            plt.savefig(folder + 'dsp.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
 
     def plot_tissue_mask(self, folder):
@@ -1128,7 +1162,7 @@ class FtugTissue:
             plt.imshow(self.actin_image, cmap='gray')
         plt.imshow(self.tissue_mask, alpha=0.5, cmap='RdBu')
         plt.axis('off')
-        plt.savefig(folder + 'tissue_mask.png', bbox_inches='tight')
+        plt.savefig(folder + 'tissue_mask.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
 
     def plot_fiber_processing(self, folder):
@@ -1136,7 +1170,7 @@ class FtugTissue:
         plt.imshow(self.fiber_image, cmap='gray')
         plt.imshow(self.fiber_mask, alpha=0.5, cmap='RdBu')
         plt.axis('off')
-        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(3, clear=True)
         rho = self.fiber_density.copy()
@@ -1144,19 +1178,19 @@ class FtugTissue:
         plt.imshow(self.fiber_image, cmap='gray')
         plt.imshow(rho, cmap='viridis', vmin=0, vmax=1)
         plt.axis('off')
-        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=180, pad_inches=0)
+        plt.savefig(folder + 'fiber_density.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(4, clear=True)
         fiber_angle_aux = self.fiber_angle.copy()
         plt.imshow(self.fiber_image, cmap='gray')
         plt.imshow(fiber_angle_aux, cmap='berlin', vmin=-np.pi/4, vmax=np.pi/4)
         plt.axis('off')
-        plt.savefig(folder + 'fiber_angle.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'fiber_angle.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(5, clear=True)
         plt.imshow(self.fiber_dispersion, alpha=1, cmap='magma', vmin=0, vmax=0.5)
         plt.axis('off')
-        plt.savefig(folder + 'fiber_dispersion.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'fiber_dispersion.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
 
     def plot_actin_processing(self, folder):
@@ -1164,18 +1198,18 @@ class FtugTissue:
         plt.imshow(self.actin_image, cmap='gray')
         plt.imshow(self.blobs_mask, alpha=0.5, cmap='RdBu')
         plt.axis('off')
-        plt.savefig(folder + 'blobs_mask.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'blobs_mask.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(2, clear=True)
         plt.imshow(self.actin_image, cmap='viridis')
         plt.imshow(self.actin_mask, alpha=0.5, cmap='RdBu')
         plt.axis('off')
-        plt.savefig(folder + 'actin_mask.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'actin_mask.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(3, clear=True)
         plt.imshow(self.actin_density, cmap='viridis', vmin=0, vmax=1)
         plt.axis('off')
-        plt.savefig(folder + 'actin_density.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'actin_density.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(4, clear=True)
         actin_angle_aux = self.actin_angle.copy()
@@ -1183,12 +1217,12 @@ class FtugTissue:
         plt.imshow(self.actin_image, cmap='gray')
         plt.imshow(actin_angle_aux, cmap='berlin', vmin=-np.pi/4, vmax=np.pi/4)
         plt.axis('off')
-        plt.savefig(folder + 'actin_angle.png', bbox_inches='tight', dpi=180, pad_inches=0)
+        plt.savefig(folder + 'actin_angle.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(5, clear=True)
         plt.imshow(self.actin_dispersion, alpha=1, cmap='magma', vmin=0, vmax=0.5)
         plt.axis('off')
-        plt.savefig(folder + 'actin_dispersion.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'actin_dispersion.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
 
     def plot_dsp_processing(self, folder, zoom=[]):
@@ -1206,13 +1240,16 @@ class FtugTissue:
         plt.imshow(dsp_image, cmap='gray')
         plt.imshow(dsp_mask, alpha=0.5, cmap='viridis', vmin=0, vmax=1)
         plt.axis('off')
-        plt.savefig(folder + 'dsp_mask.png', bbox_inches='tight', dpi=180, pad_inches=0)
+        plt.savefig(folder + 'dsp_mask.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
         plt.figure(2, clear=True)
+        rho = self.dsp_density.copy()
+        rho[self.tissue_mask==0] = np.nan
+        print(np.nanmax(rho))
         plt.imshow(dsp_image, cmap='gray')
-        plt.imshow(self.dsp_density, alpha=0.5, cmap='viridis')
+        plt.imshow(rho, alpha=0.5, cmap='viridis', vmin=0.01, vmax=0.1)
         plt.axis('off')
-        plt.savefig(folder + 'dsp_density.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'dsp_density.png', bbox_inches='tight', dpi=300, pad_inches=0)
 
 
     def plot_dsp_processing_zoom(self, folder, zoom):
@@ -1230,7 +1267,8 @@ class FtugTissue:
         axs[1].imshow(dsp_mask, cmap='viridis', vmin=0, vmax=1)
         axs[1].axis('off')
         axs[1].set_title('DSP Mask')
-        plt.savefig(folder + 'dsp_mask_zoom.png', bbox_inches='tight', dpi=180)
+        plt.savefig(folder + 'dsp_mask_zoom.png', bbox_inches='tight', dpi=300, pad_inches=0)
+
 
 
 

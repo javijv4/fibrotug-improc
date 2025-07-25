@@ -15,6 +15,8 @@ from skimage import measure, morphology, transform, filters
 from imregistration.utils import normalize_image
 
 import shapely.geometry as sg
+from shapelysmooth import taubin_smooth
+
 import meshio as io
 import pygmsh
 import trimesh
@@ -470,7 +472,7 @@ def subdivide_mesh_fibers(mesh, elem_fiber_mask, bfaces):
     
 
 
-def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, add_posts=False, subdivide_fibers=False):
+def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, subdivide_fibers=False):
     rescaled_meshsize = meshsize*rescale
 
     # Get contour using tissue_mask
@@ -506,10 +508,6 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     # Tissue boundary
     tissue_mask = morphology.binary_erosion(tissue_mask, footprint=morphology.disk(2))
-    if add_posts:
-        lim = np.where(np.sum(tissue_mask, axis=1))[0][np.array([0,-1])]
-        tissue_mask[lim[0]-10:lim[0]] = tissue_mask[lim[0]]
-        tissue_mask[lim[1]:lim[1]+10] = tissue_mask[lim[1]]
 
     boundary = measure.find_contours(tissue_mask)[0]
     polygon = sg.Polygon(boundary)
@@ -543,7 +541,7 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
 
     # Plot boundary and holes
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(20,10))
     ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.', linewidth=2, label='Boundary')
     for hole in holes:
         ax.plot(hole[:, 1], hole[:, 0], 'b-', linewidth=1, label='Hole')
@@ -579,8 +577,6 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     ien = tri_mesh.cells_dict['triangle']
     _, bfaces = get_surface_mesh(tri_mesh)
 
-    io.write('check.vtu', tri_mesh)
-
     if np.sum(fiber_mask_og) == 0:
         tri_mesh.points = tri_mesh.points/rescale
         return tri_mesh, None, None
@@ -599,10 +595,7 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     elem_fiber_mask = 1-inholes
 
     tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
-    io.write('check.vtu', tri_mesh)
-
-    fib_mesh = io.Mesh(xyz, {'triangle': ien[elem_fiber_mask==1]})
-    io.write('check.vtu', fib_mesh)
+    io.write('check1.vtu', tri_mesh)
 
     # # Plot the mesh
     # fig, ax = plt.subplots()
@@ -646,7 +639,7 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
 
-    io.write('check.vtu', tri_mesh)
+    io.write('check2.vtu', tri_mesh)
 
     # Subdivide fiber elements if needed
     if subdivide_fibers:
@@ -670,19 +663,20 @@ def mask2mesh_with_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     xyz = xyz/rescale
     tri_mesh = io.Mesh(xyz, {'triangle': ien})
-    io.write('check.vtu', tri_mesh)
+    io.write('check3.vtu', tri_mesh)
 
     # Just making sure the mesh is built correctly (probably not the smartest way of doing this)
     tri_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
 
     # Create fiber mesh
     fiber_mesh, map_mesh_fiber, map_fiber_mesh = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
+    io.write('check4.vtu', tri_mesh)
 
     return tri_mesh, elem_fiber_mask, fiber_mesh
 
 
 
-def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, add_posts=False, subdivide_fibers=False):
+def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, subdivide_fibers=False):
     rescaled_meshsize = meshsize*rescale
 
     # Get contour using tissue_mask
@@ -691,6 +685,7 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     mesh_tissue_mask = morphology.binary_closing(mesh_tissue_mask, footprint=morphology.disk(2))
 
     mask = clean_mask(mesh_tissue_mask)
+    mask = mesh_tissue_mask
     mask[0:10] = 0
     mask[-10:] = 0
 
@@ -716,19 +711,29 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     # Tissue boundary
     tissue_mask = morphology.binary_erosion(tissue_mask, footprint=morphology.disk(2))
-    if add_posts:
-        lim = np.where(np.sum(tissue_mask, axis=1))[0][np.array([0,-1])]
-        tissue_mask[lim[0]-10:lim[0]] = tissue_mask[lim[0]]
-        tissue_mask[lim[1]:lim[1]+10] = tissue_mask[lim[1]]
 
     boundary = measure.find_contours(tissue_mask)[0]
     polygon = sg.Polygon(boundary)
     length = polygon.length
-    k = np.round(length/rescaled_meshsize).astype(int)
+    min_area = 0.5*(rescaled_meshsize/2)**2
+    k = np.round(length/(rescaled_meshsize)*2).astype(int)
     equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
     equi_points = equi_points.squeeze().T
     equi_points[:,0] -= 20.5
+    minx = np.min(equi_points[:,0])
+    maxx = np.max(equi_points[:,0])
     tissue_equi_points = equi_points
+
+    # Smooth tissue
+    tissue_equi_points = np.vstack((tissue_equi_points, tissue_equi_points[0])) # closing the polygon
+    tissue_equi_points = np.array(taubin_smooth(tissue_equi_points, factor=0.1, mu=0.1, steps=1))[:-1]
+    polygon = sg.Polygon(tissue_equi_points)
+    length = polygon.length
+    k = np.round(length/(rescaled_meshsize)*3).astype(int)
+    tissue_equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+    tissue_equi_points = tissue_equi_points.squeeze().T
+    tissue_equi_points[tissue_equi_points[:,0] < minx, 0] = minx
+    tissue_equi_points[tissue_equi_points[:,0] > maxx, 0] = maxx
 
 
     holes = []
@@ -737,8 +742,10 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
         boundary = np.append(boundary, boundary[0,None], axis=0)
         polygon = sg.Polygon(boundary)
+        if polygon.area < min_area:
+            continue
         length = polygon.length
-        k = np.round(length/rescaled_meshsize).astype(int)
+        k = np.round(length/(rescaled_meshsize)*2).astype(int)
         if k < 4:
             continue
         equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
@@ -751,7 +758,42 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
     # Order holes based on len_holes
     holes = [hole for _, hole in sorted(zip(len_holes, holes), key=lambda x: x[0])][::-1]
 
+    # Smooth holes
+    holes_smooth = []
+    for hole in holes:
+        h = np.vstack((hole, hole[0]))
+        h = np.array(taubin_smooth(h, factor=0.1, mu=0.1, steps=1))[:-1]
+        if h.shape[0] >= 4:
+            polygon = sg.Polygon(h)
+            length = polygon.length
+            k = np.round(length/(rescaled_meshsize)*2).astype(int)
+            h = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+            h = h.squeeze().T
+            h[h[:,0] < minx, 0] = minx
+            h[h[:,0] > maxx, 0] = maxx
+
+        try:
+            poly_hole = sg.Polygon(h)
+        except:
+            continue
+        if poly_hole.area < min_area:
+            continue
+
+        holes_smooth.append(h)
+        
+    holes = holes_smooth
+
+
+    # Plot tissue_equi_points and holes
+    fig, ax = plt.subplots(figsize=(60, 20))
+    ax.imshow(mask, cmap='gray', origin='lower')
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.-', linewidth=2, label='Tissue Boundary')
+    for hole in holes:
+        ax.plot(hole[:, 1], hole[:, 0], 'b.-', linewidth=1, label='Hole')
+    ax.set_aspect('equal')
+
     # mesh
+    plt.figure(1)
     with pygmsh.occ.Geometry() as geom:
 
         borders = []
@@ -768,6 +810,506 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
         # # Cutout the fiber boundary
         cuts = []
         for border in tqdm(borders):
+            p = np.array([p.x for p in border.points])
+            plt.plot(p[:, 1], p[:, 0], 'b.-', linewidth=1)
+            cuts.append(geom.boolean_intersection([tissue, border], delete_first=False)[0])
+
+        geom.boolean_fragments(tissue, cuts)
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    xyz = tri_mesh.points
+    ien = tri_mesh.cells_dict['triangle']
+
+    io.write('check0.vtu', tri_mesh)
+    
+    # Obtaining mask of fiber elements
+    midpoints = np.mean(xyz[ien], axis=1)
+    inholes = np.zeros(len(midpoints), dtype=int)
+    spoints = [sg.Point(point) for point in midpoints]
+
+    print('Finding fiber elems')
+    for hole in tqdm(holes):
+        poly = sg.polygon.Polygon(hole)
+        marker = poly.contains(spoints)
+        inholes[marker] = 1
+
+    elem_fiber_mask = 1-inholes
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    io.write('check1.vtu', tri_mesh)
+
+    print('Removing disconnected cells')
+    disconnected_cells = find_disconnected_cells(ien[elem_fiber_mask==1])
+    cells = np.arange(len(ien))
+    cells = cells[elem_fiber_mask==1]
+    elem_fiber_mask[cells[disconnected_cells]] = 0
+
+    # Check for isolated cells
+    print('Finding fiber_mesh neighbors')
+    fiber_elems = np.where(elem_fiber_mask==1)[0]
+    elem_neigh = get_elem_neighbors(tri_mesh.cells[0].data[fiber_elems])
+    non_neigh = np.sum(elem_neigh==-1, axis=1)
+    isolated_cells = fiber_elems[np.where(non_neigh==3)[0]]
+
+    for e in isolated_cells:
+        elem_fiber_mask[e] = 0
+
+    # Check cells with one neighbor
+    one_neigh = np.sum(elem_neigh==-1, axis=1)
+    one_neigh_cells = np.where(one_neigh==2)[0]
+
+    for e in one_neigh_cells:
+        neigh = elem_neigh[e, elem_neigh[e] >= 0][0]
+        neigh_neigh = elem_neigh[neigh]
+
+        if np.sum(neigh_neigh == -1) == 2: # two isolated cells
+            elem_fiber_mask[fiber_elems[e]] = 0
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
+    xyz = fiber_mesh.points
+    ien = fiber_mesh.cells_dict['triangle']
+
+    elem_fiber_mask = np.ones(len(fiber_mesh.cells[0].data), dtype=int)
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+
+    # Getting boundaries to fix bad elements
+    print('Deleting bad elements on the boundaries')
+    xmin = np.min(fiber_mesh.points[:,0])
+    xmax = np.max(fiber_mesh.points[:,0])
+    post1_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmin), axis=1))[0]
+    post2_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmax), axis=1))[0]
+    post_nodes = np.union1d(bfaces[post1_faces], bfaces[post2_faces])
+
+    # Loop until all bad elements are fixed
+    del_elems = 100
+    it = 1
+    while del_elems > 0:
+        xyz, ien, elem_fiber_mask, del_elems = fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask)
+        print('Iteration:', it, 'Deleted elements:', del_elems)
+        it += 1
+
+    xyz = xyz/rescale
+
+    # Check if bad elements only have one neighbor
+    fiber_mesh = io.Mesh(xyz, {'triangle': ien})
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+    xyz, ien = fix_quality_one_neigh_elems(xyz, ien, belems)
+
+    tri_mesh = io.Mesh(xyz, {'triangle': ien})
+    _, bfaces = get_surface_mesh(tri_mesh)
+    io.write('check.vtu', fiber_mesh)
+    
+    # Subdivide fiber elements if needed
+    if subdivide_fibers:
+        print('Subdividing fiber elements')
+        tri_mesh = subdivide_mesh_fibers(tri_mesh, elem_fiber_mask, bfaces)
+
+    # Dummy process to get rid of isolated points
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
+
+    # Create tissue mesh
+
+    with pygmsh.occ.Geometry() as geom:
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize*2
+        )
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tissue_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    tissue_mesh.points = tissue_mesh.points/rescale
+
+
+    return fiber_mesh, tissue_mesh
+
+
+
+
+def mask2mesh_only_fibers_toy_test_full(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, subdivide_fibers=False, clean_fiber_mask=True):
+    rescaled_meshsize = meshsize*rescale
+
+    # Get contour using tissue_mask
+    mesh_tissue_mask = tissue_mask_og.astype(int)
+    mesh_tissue_mask = normalize_image(transform.rescale(mesh_tissue_mask, rescale))
+    mesh_tissue_mask = morphology.binary_closing(mesh_tissue_mask, footprint=morphology.disk(2))
+
+    mask = clean_mask(mesh_tissue_mask)
+    mask = mesh_tissue_mask
+    mask[0:10] = 0
+    mask[-10:] = 0
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(0,0)))
+    # mask = filters.gaussian(mask) > 0.75
+    tissue_mask = mask
+
+
+    # Find holes
+    mesh_fiber_mask = fiber_mask_og.astype(int)
+    mesh_fiber_mask = normalize_image(transform.rescale(mesh_fiber_mask, rescale))
+
+    # Generate mesh and grab node coordinates
+    if clean_fiber_mask:
+        mask = clean_mask(mesh_fiber_mask)
+    else:
+        mask = mesh_fiber_mask
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(0,0)))
+    mask[~tissue_mask] = 0
+    mask += ~(tissue_mask) #morphology.binary_erosion(tissue_mask, footprint=morphology.disk(4)))
+    mask = filters.gaussian(mask) > 0.5
+    boundaries = measure.find_contours(~mask)
+
+    # Tissue boundary
+    # tissue_mask = morphology.binary_erosion(tissue_mask, footprint=morphology.disk(5))
+    tissue_mask[0:20] = 0
+    tissue_mask[-20:] = 0
+
+    boundary = measure.find_contours(tissue_mask)[0]
+    polygon = sg.Polygon(boundary)
+    length = polygon.length
+    min_area = 0.5*(rescaled_meshsize/2)**2
+    k = np.round(length/(rescaled_meshsize)*2).astype(int)
+    equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+    equi_points = equi_points.squeeze().T
+    equi_points[:,0] -= 20.5
+    minx = np.min(equi_points[:,0])
+    maxx = np.max(equi_points[:,0])
+    tissue_equi_points = equi_points
+
+    # Smooth tissue
+    tissue_equi_points = np.vstack((tissue_equi_points, tissue_equi_points[0])) # closing the polygon
+    tissue_equi_points = np.array(taubin_smooth(tissue_equi_points, factor=0.1, mu=0.1, steps=1))[:-1]
+    polygon = sg.Polygon(tissue_equi_points)
+    length = polygon.length
+    k = np.round(length/(rescaled_meshsize)*3).astype(int)
+    tissue_equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+    tissue_equi_points = tissue_equi_points.squeeze().T
+    tissue_equi_points[tissue_equi_points[:,0] < minx, 0] = minx
+    tissue_equi_points[tissue_equi_points[:,0] > maxx, 0] = maxx
+
+
+    holes = []
+    len_holes = []
+    for boundary in boundaries:
+
+        boundary = np.append(boundary, boundary[0,None], axis=0)
+        polygon = sg.Polygon(boundary)
+        if polygon.area < min_area:
+            continue
+        length = polygon.length
+        k = np.round(length/(rescaled_meshsize)*2).astype(int)
+        if k < 4:
+            continue
+        equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+        equi_points = equi_points.squeeze().T
+        equi_points[:,0] -= 20.5
+        # equi_points = np.append(equi_points, equi_points[0,None], axis=0)
+        holes.append(equi_points)
+        len_holes.append(len(equi_points))
+
+    # Order holes based on len_holes
+    holes = [hole for _, hole in sorted(zip(len_holes, holes), key=lambda x: x[0])][::-1]
+
+    # Smooth holes
+    holes_smooth = []
+    for hole in holes:
+        h = np.vstack((hole, hole[0]))
+        h = np.array(taubin_smooth(h, factor=0.1, mu=0.1, steps=1))[:-1]
+        if h.shape[0] >= 4:
+            polygon = sg.Polygon(h)
+            length = polygon.length
+            k = np.round(length/(rescaled_meshsize)*2).astype(int)
+            h = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+            h = h.squeeze().T
+            h[h[:,0] < minx, 0] = minx
+            h[h[:,0] > maxx, 0] = maxx
+
+        try:
+            poly_hole = sg.Polygon(h)
+        except:
+            continue
+        if poly_hole.area < min_area:
+            continue
+
+        holes_smooth.append(h)
+        
+    holes = holes_smooth
+
+
+    # Plot tissue_equi_points and holes
+    fig, ax = plt.subplots(figsize=(60, 20))
+    # ax.imshow(mask, cmap='gray', origin='lower')
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.-', linewidth=2, label='Tissue Boundary')
+    for hole in holes:
+        ax.plot(hole[:, 1], hole[:, 0], 'b.-', linewidth=1, label='Hole')
+    ax.set_aspect('equal')
+
+    # mesh
+    plt.figure(1)
+    with pygmsh.occ.Geometry() as geom:
+
+        borders = []
+        for hole in tqdm(holes):
+            borders.append(geom.add_polygon(hole,
+                mesh_size=rescaled_meshsize
+            ))
+
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize
+        )
+
+        # # Cutout the fiber boundary
+        cuts = []
+        for border in tqdm(borders[:-1]):
+            p = np.array([p.x for p in border.points])
+            plt.plot(p[:, 1], p[:, 0], 'b.-', linewidth=1)
+            try:
+                intersect = geom.boolean_intersection([tissue, border], delete_first=False)[0]
+            except:
+                print('Intersection failed, skipping border')
+                continue
+            cuts.append(intersect)
+
+        geom.boolean_fragments(tissue, cuts)
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    xyz = tri_mesh.points
+    ien = tri_mesh.cells_dict['triangle']
+
+    io.write('check0.vtu', tri_mesh)
+    
+    # Obtaining mask of fiber elements
+    midpoints = np.mean(xyz[ien], axis=1)
+    inholes = np.zeros(len(midpoints), dtype=int)
+    spoints = [sg.Point(point) for point in midpoints]
+
+    print('Finding fiber elems')
+    for hole in tqdm(holes):
+        poly = sg.polygon.Polygon(hole)
+        marker = poly.contains(spoints)
+        inholes[marker] = 1
+
+    elem_fiber_mask = 1-inholes
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    io.write('check1.vtu', tri_mesh)
+
+    print('Removing disconnected cells')
+    disconnected_cells = find_disconnected_cells(ien[elem_fiber_mask==1])
+    cells = np.arange(len(ien))
+    cells = cells[elem_fiber_mask==1]
+    elem_fiber_mask[cells[disconnected_cells]] = 0
+
+    # Check for isolated cells
+    print('Finding fiber_mesh neighbors')
+    fiber_elems = np.where(elem_fiber_mask==1)[0]
+    elem_neigh = get_elem_neighbors(tri_mesh.cells[0].data[fiber_elems])
+    non_neigh = np.sum(elem_neigh==-1, axis=1)
+    isolated_cells = fiber_elems[np.where(non_neigh==3)[0]]
+
+    for e in isolated_cells:
+        elem_fiber_mask[e] = 0
+
+    # Check cells with one neighbor
+    one_neigh = np.sum(elem_neigh==-1, axis=1)
+    one_neigh_cells = np.where(one_neigh==2)[0]
+
+    for e in one_neigh_cells:
+        neigh = elem_neigh[e, elem_neigh[e] >= 0][0]
+        neigh_neigh = elem_neigh[neigh]
+
+        if np.sum(neigh_neigh == -1) == 2: # two isolated cells
+            elem_fiber_mask[fiber_elems[e]] = 0
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
+    xyz = fiber_mesh.points
+    ien = fiber_mesh.cells_dict['triangle']
+
+    elem_fiber_mask = np.ones(len(fiber_mesh.cells[0].data), dtype=int)
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+
+    # Getting boundaries to fix bad elements
+    print('Deleting bad elements on the boundaries')
+    xmin = np.min(fiber_mesh.points[:,0])
+    xmax = np.max(fiber_mesh.points[:,0])
+    post1_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmin), axis=1))[0]
+    post2_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmax), axis=1))[0]
+    post_nodes = np.union1d(bfaces[post1_faces], bfaces[post2_faces])
+
+    # Loop until all bad elements are fixed
+    del_elems = 100
+    it = 1
+    while del_elems > 0:
+        xyz, ien, elem_fiber_mask, del_elems = fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask)
+        print('Iteration:', it, 'Deleted elements:', del_elems)
+        it += 1
+
+    xyz = xyz/rescale
+
+    # Check if bad elements only have one neighbor
+    fiber_mesh = io.Mesh(xyz, {'triangle': ien})
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+    xyz, ien = fix_quality_one_neigh_elems(xyz, ien, belems)
+
+    tri_mesh = io.Mesh(xyz, {'triangle': ien})
+    _, bfaces = get_surface_mesh(tri_mesh)
+    io.write('check.vtu', fiber_mesh)
+    
+    # Subdivide fiber elements if needed
+    if subdivide_fibers:
+        print('Subdividing fiber elements')
+        tri_mesh = subdivide_mesh_fibers(tri_mesh, elem_fiber_mask, bfaces)
+
+    # Dummy process to get rid of isolated points
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
+
+    # Create tissue mesh
+
+    with pygmsh.occ.Geometry() as geom:
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize*2
+        )
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tissue_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    tissue_mesh.points = tissue_mesh.points/rescale
+
+
+    return fiber_mesh, tissue_mesh
+
+
+
+def mask2mesh_only_fibers_toy_test(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, add_posts=False, subdivide_fibers=False):
+    rescaled_meshsize = meshsize*rescale
+
+    # Get contour using tissue_mask
+    mesh_tissue_mask = tissue_mask_og.astype(int)
+    mesh_tissue_mask = normalize_image(transform.rescale(mesh_tissue_mask, rescale)) > 0.5
+    # mesh_tissue_mask = morphology.binary_closing(mesh_tissue_mask, footprint=morphology.disk(2))
+
+    # mask = clean_mask(mesh_tissue_mask)
+    mask = mesh_tissue_mask
+    mask[0:10] = 0
+    mask[-10:] = 0
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(10,10)))
+    # mask = filters.gaussian(mask) > 0.75
+    tissue_mask = mask.astype(bool)
+
+
+    # Find holes
+    mesh_fiber_mask = fiber_mask_og.astype(int)
+    mesh_fiber_mask = normalize_image(transform.rescale(mesh_fiber_mask, rescale))
+
+    # Generate mesh and grab node coordinates
+    mask = clean_mask(mesh_fiber_mask)
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(10,10)))
+    mask[~tissue_mask] = 0
+    mask += ~tissue_mask
+    # mask = filters.gaussian(mask) > 0.5
+    boundaries = measure.find_contours(~mask)
+
+    min_area = 0.5*rescaled_meshsize**2
+
+    # Tissue boundary
+    # tissue_mask = morphology.binary_erosion(tissue_mask, footprint=morphology.disk(2))
+
+    boundary = measure.find_contours(tissue_mask.astype(int))[0]
+    xmin, ymin = np.min(boundary, axis=0)
+    xmax, ymax = np.max(boundary, axis=0)
+    equi_points = np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]])
+    equi_points[:,0] -= 20.5
+    equi_points[:,1] -= 10.5
+    xmin, ymin = np.min(equi_points, axis=0)
+    xmax, ymax = np.max(equi_points, axis=0)
+    tissue_equi_points = equi_points
+
+    holes = []
+    len_holes = []
+    for boundary in boundaries:
+
+        boundary = np.append(boundary, boundary[0,None], axis=0)
+        polygon = sg.Polygon(boundary)
+        if polygon.area < min_area:
+            continue
+        length = polygon.length
+        k = np.round(length/rescaled_meshsize).astype(int)
+        if k < 4:
+            continue
+        equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+        equi_points = equi_points.squeeze().T
+        equi_points[:,0] -= 20.5
+        equi_points[:,1] -= 10.5
+        # equi_points = np.append(equi_points, equi_points[0,None], axis=0)
+        holes.append(equi_points)
+        len_holes.append(len(equi_points))
+
+    # Order holes based on len_holes
+    holes = [hole for _, hole in sorted(zip(len_holes, holes), key=lambda x: x[0])][::-1]
+
+    # # Smooth holes
+    # holes_smooth = []
+    # for hole in holes:
+    #     h = np.vstack((hole, hole[0]))
+    #     h = np.array(taubin_smooth(h))[:-1]
+    #     h[h[:,0] < xmin, 0] = xmin
+    #     h[h[:,0] > xmax, 0] = xmax
+
+    #     poly_hole = sg.Polygon(h)
+    #     if poly_hole.area < min_area:
+    #         continue
+
+    #     holes_smooth.append(h)
+        
+    # holes = holes_smooth
+
+
+    # Plot tissue_equi_points and holes
+    fig, ax = plt.subplots(figsize=(40, 8))
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.-', linewidth=2, label='Tissue Boundary')
+    for hole in holes:
+        ax.plot(hole[:, 1], hole[:, 0], 'b.-', linewidth=1, label='Hole')
+    ax.set_aspect('equal')
+
+    # mesh
+    plt.figure(1)
+    with pygmsh.occ.Geometry() as geom:
+
+        borders = []
+        for hole in tqdm(holes):
+            borders.append(geom.add_polygon(hole,
+                mesh_size=rescaled_meshsize
+            ))
+
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize
+        )
+
+        # # Cutout the fiber boundary
+        cuts = []
+        for border in tqdm(borders):
+            p = np.array([p.x for p in border.points])
+            plt.plot(p[:, 1], p[:, 0], 'b.-', linewidth=1)
             cuts.append(geom.boolean_intersection([tissue, border], delete_first=False)[0])
 
         geom.boolean_fragments(tissue, cuts)
@@ -879,6 +1421,261 @@ def mask2mesh_only_fibers(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10,
 
     return fiber_mesh, tissue_mesh
 
+
+
+
+def mask2mesh_only_fibers_toy_test2(tissue_mask_og, fiber_mask_og, rescale=4, meshsize=10, add_posts=False, subdivide_fibers=False):
+    rescaled_meshsize = meshsize*rescale
+
+    # Get contour using tissue_mask
+    mesh_tissue_mask = tissue_mask_og.astype(int)
+    mesh_tissue_mask = normalize_image(transform.rescale(mesh_tissue_mask, rescale)) > 0.5
+    mesh_tissue_mask = morphology.binary_closing(mesh_tissue_mask, footprint=morphology.disk(2))
+
+    # mask = clean_mask(mesh_tissue_mask)
+    mask = mesh_tissue_mask
+    mask[0:10] = 0
+    mask[-10:] = 0
+    mask[:,-50:] = 0
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(10,10)))
+    # mask = filters.gaussian(mask) > 0.75
+    tissue_mask = mask.astype(bool)
+
+
+    # Find holes
+    mesh_fiber_mask = fiber_mask_og.astype(int)
+    mesh_fiber_mask = normalize_image(transform.rescale(mesh_fiber_mask, rescale))
+
+    # Generate mesh and grab node coordinates
+    mask = clean_mask(mesh_fiber_mask)
+
+    # Find boundary polygon
+    mask = np.pad(mask, pad_width=((20,20),(10,10)))
+    mask[~tissue_mask] = 0
+    mask += ~tissue_mask
+    mask[:,-60:] = 0
+    mask[0:45] = 1
+    mask[-45:] = 1
+    mask[:,-5:] = 1
+    # mask = filters.gaussian(mask) > 0.5
+    boundaries = measure.find_contours(~mask)
+
+    min_area = 0.5*rescaled_meshsize**2
+
+    # Tissue boundary
+    # tissue_mask = morphology.binary_erosion(tissue_mask, footprint=morphology.disk(2))
+
+    boundary = measure.find_contours(tissue_mask.astype(int))[0]
+    polygon = sg.Polygon(boundary)
+    length = polygon.length
+    min_area = 0.5*(rescaled_meshsize/2)**2
+    k = np.round(length/(rescaled_meshsize)*2).astype(int)
+    equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+    equi_points = equi_points.squeeze().T
+    equi_points[:,0] -= 20.5
+    tissue_equi_points = equi_points
+    minx = np.min(equi_points[:,0])
+    maxx = np.max(equi_points[:,0])
+    tissue_equi_points[tissue_equi_points[:,0] - minx < rescaled_meshsize/2, 0] = minx
+    tissue_equi_points[tissue_equi_points[:,0] - maxx > -rescaled_meshsize/2, 0] = maxx
+
+    maxy = np.max(tissue_equi_points[:,1])
+    marker = np.isclose(tissue_equi_points[:,0], minx) | np.isclose(tissue_equi_points[:,0], maxx) | np.isclose(tissue_equi_points[:,1], maxy)
+
+    smooth_points = np.array(taubin_smooth(tissue_equi_points))
+    tissue_equi_points[~marker, :] = smooth_points[~marker, :]
+
+
+    # # Plot tissue_equi_points to visualize the boundary
+    # plt.figure(figsize=(10, 5))
+    # plt.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.-', label='Tissue Boundary')
+    # plt.title('Tissue Boundary Points')
+    # plt.xlabel('Y')
+    # plt.ylabel('X')
+    # plt.gca().set_aspect('equal')
+    # plt.legend()
+    # plt.show()
+
+    holes = []
+    len_holes = []
+    for boundary in boundaries:
+
+        boundary = np.append(boundary, boundary[0,None], axis=0)
+        polygon = sg.Polygon(boundary)
+        if polygon.area < min_area:
+            continue
+        length = polygon.length
+        k = np.round(length/rescaled_meshsize).astype(int)
+        if k < 4:
+            continue
+        equi_points = np.transpose([polygon.exterior.interpolate(t).xy for t in np.linspace(0,polygon.length,k,False)])
+        equi_points = equi_points.squeeze().T
+        equi_points[:,0] -= 20.5
+        equi_points[:,1] -= 10.5
+        # equi_points = np.append(equi_points, equi_points[0,None], axis=0)
+        holes.append(equi_points)
+        len_holes.append(len(equi_points))
+
+    # Smooth holes
+    xmin = np.min(tissue_equi_points[:,0])
+    xmax = np.max(tissue_equi_points[:,0])
+    holes_smooth = []
+    for hole in holes:
+        h = np.vstack((hole, hole[0]))
+        h = np.array(taubin_smooth(h))[:-1]
+        h[h[:,0] < xmin, 0] = xmin
+        h[h[:,0] > xmax, 0] = xmax
+
+        poly_hole = sg.Polygon(h)
+        if poly_hole.area < min_area:
+            continue
+
+        holes_smooth.append(h)
+        
+    holes = holes_smooth
+
+    # Order holes based on len_holes
+    holes = [hole for _, hole in sorted(zip(len_holes, holes), key=lambda x: x[0])][::-1]
+
+    # Plot tissue_equi_points and holes
+    fig, ax = plt.subplots(figsize=(40, 8))
+    ax.plot(tissue_equi_points[:, 1], tissue_equi_points[:, 0], 'r.-', linewidth=2, label='Tissue Boundary')
+    for hole in holes:
+        ax.plot(hole[:, 1], hole[:, 0], 'b.-', linewidth=1, label='Hole')
+    ax.set_aspect('equal')
+
+    # mesh
+    plt.figure(1)
+    with pygmsh.occ.Geometry() as geom:
+
+        borders = []
+        for hole in tqdm(holes):
+            borders.append(geom.add_polygon(hole,
+                mesh_size=rescaled_meshsize
+            ))
+
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize
+        )
+
+        # # Cutout the fiber boundary
+        cuts = []
+        for border in tqdm(borders):
+            p = np.array([p.x for p in border.points])
+            plt.plot(p[:, 1], p[:, 0], 'b.-', linewidth=1)
+            cuts.append(geom.boolean_intersection([tissue, border], delete_first=False)[0])
+
+        geom.boolean_fragments(tissue, cuts)
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tri_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    xyz = tri_mesh.points
+    ien = tri_mesh.cells_dict['triangle']
+    
+    # Obtaining mask of fiber elements
+    midpoints = np.mean(xyz[ien], axis=1)
+    inholes = np.zeros(len(midpoints), dtype=int)
+    spoints = [sg.Point(point) for point in midpoints]
+
+    print('Finding fiber elems')
+    for hole in tqdm(holes):
+        poly = sg.polygon.Polygon(hole)
+        marker = poly.contains(spoints)
+        inholes[marker] = 1
+
+    elem_fiber_mask = 1-inholes
+
+    print('Removing disconnected cells')
+    disconnected_cells = find_disconnected_cells(ien[elem_fiber_mask==1])
+    cells = np.arange(len(ien))
+    cells = cells[elem_fiber_mask==1]
+    elem_fiber_mask[cells[disconnected_cells]] = 0
+
+    # Check for isolated cells
+    print('Finding fiber_mesh neighbors')
+    fiber_elems = np.where(elem_fiber_mask==1)[0]
+    elem_neigh = get_elem_neighbors(tri_mesh.cells[0].data[fiber_elems])
+    non_neigh = np.sum(elem_neigh==-1, axis=1)
+    isolated_cells = fiber_elems[np.where(non_neigh==3)[0]]
+
+    for e in isolated_cells:
+        elem_fiber_mask[e] = 0
+
+    # Check cells with one neighbor
+    one_neigh = np.sum(elem_neigh==-1, axis=1)
+    one_neigh_cells = np.where(one_neigh==2)[0]
+
+    for e in one_neigh_cells:
+        neigh = elem_neigh[e, elem_neigh[e] >= 0][0]
+        neigh_neigh = elem_neigh[neigh]
+
+        if np.sum(neigh_neigh == -1) == 2: # two isolated cells
+            elem_fiber_mask[fiber_elems[e]] = 0
+
+    tri_mesh.cell_data['fiber mask'] = [elem_fiber_mask]
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.where(elem_fiber_mask==1)[0])
+    xyz = fiber_mesh.points
+    ien = fiber_mesh.cells_dict['triangle']
+
+    elem_fiber_mask = np.ones(len(fiber_mesh.cells[0].data), dtype=int)
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+
+    # Getting boundaries to fix bad elements
+    print('Deleting bad elements on the boundaries')
+    xmin = np.min(fiber_mesh.points[:,0])
+    xmax = np.max(fiber_mesh.points[:,0])
+    post1_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmin), axis=1))[0]
+    post2_faces = np.where(np.all(np.isclose(xyz[bfaces][:,:,0], xmax), axis=1))[0]
+    post_nodes = np.union1d(bfaces[post1_faces], bfaces[post2_faces])
+
+    # Loop until all bad elements are fixed
+    del_elems = 100
+    it = 1
+    while del_elems > 0:
+        xyz, ien, elem_fiber_mask, del_elems = fix_bad_post_elements(xyz, ien, post_nodes, elem_fiber_mask)
+        print('Iteration:', it, 'Deleted elements:', del_elems)
+        it += 1
+
+    xyz = xyz/rescale
+
+    # Check if bad elements only have one neighbor
+    fiber_mesh = io.Mesh(xyz, {'triangle': ien})
+    belems, bfaces = get_surface_mesh(fiber_mesh)
+    xyz, ien = fix_quality_one_neigh_elems(xyz, ien, belems)
+
+    tri_mesh = io.Mesh(xyz, {'triangle': ien})
+    _, bfaces = get_surface_mesh(tri_mesh)
+    io.write('check.vtu', tri_mesh)
+    
+    # Subdivide fiber elements if needed
+    if subdivide_fibers:
+        print('Subdividing fiber elements')
+        tri_mesh = subdivide_mesh_fibers(tri_mesh, elem_fiber_mask, bfaces)
+
+    # Dummy process to get rid of isolated points
+    fiber_mesh, _, _ = create_submesh(tri_mesh, np.arange(len(tri_mesh.cells[0].data)))
+
+    # Create tissue mesh
+
+    with pygmsh.occ.Geometry() as geom:
+        # main surface
+        tissue = geom.add_polygon(tissue_equi_points,
+            mesh_size=rescaled_meshsize*2
+        )
+
+        mesh = geom.generate_mesh(verbose=True)
+
+    points = mesh.points[:,0:2]
+    tissue_mesh = io.Mesh(points, {'triangle': mesh.cells_dict['triangle']})
+    tissue_mesh.points = tissue_mesh.points/rescale
+
+
+    return fiber_mesh, tissue_mesh
 
 def get_surface_mesh(mesh):
     ien = mesh.cells[0].data
@@ -1029,13 +1826,13 @@ def fix_quality_one_neigh_elems(xyz, ien, belems):
 
         # sanity check
         zero_neigh_elems = np.where(elem_neigh_count == 0)[0]
-        assert len(zero_neigh_elems) == 0
 
         # Find elements with one neighbor
         one_neigh_elems = np.where(elem_neigh_count == 1)[0]
 
         elem_del = np.intersect1d(bad_elems, one_neigh_elems)
         elem_del = np.setdiff1d(elem_del, belems)
+        elem_del = np.union1d(elem_del, zero_neigh_elems)
 
         ien = np.delete(ien, elem_del, axis=0)
         quality = np.delete(quality, elem_del)

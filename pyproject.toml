@@ -25,5 +25,7 @@ dependencies = [
   "imagecodecs",
   "itk-elastix",
   "opencv-python",
-  "pygmsh"
+  "pygmsh",
+  "shapelysmooth",
+  "shapely"
 ]

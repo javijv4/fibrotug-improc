@@ -24,11 +24,10 @@ if dataset == 1:
 elif dataset == 2:
     mask_type = 'both'
 
-samples = ['wt07', 'wt08']
-
-# samples = ['wt04', 'wt05', 'wt06', 'wt09', 'wt12', 'wt13']
-days = ['post']
-force_compute = True
+#gem03 post, gem 04 pre, gem05 pre
+samples = ['gem02'] #, 'gem03', 'gem04', 'gem05', 'gem08', 'gem10']
+days = ['pre']
+force_compute = False
 for sample in samples:
     for day in days:
         tissue_fldr = f'{path}/{sample}/{day}/'
@@ -49,20 +48,20 @@ for sample in samples:
         tissue = FtugTissue(tissue_fldr, images)
         tissue.plot_images(png_dump)
 
-        tissue.get_tissue_mask(tissue_mask_type=mask_type)
+        tissue.get_tissue_mask(tissue_mask_type=mask_type, force_compute=False)
         tissue.plot_tissue_mask(png_dump)
 
         # Fiber processing
         if 'fibers' in images:
             tissue.get_fiber_mask()
-            tissue.process_fibers(force_compute=force_compute)
+            tissue.process_fibers(force_compute=False)
             tissue.plot_fiber_processing(png_dump)
 
         # Actinin processing
         if 'actin' in images:
             tissue.get_actin_blob_mask()
             tissue.get_actin_mask()
-            tissue.process_actin(force_compute=force_compute)
+            tissue.process_actin(force_compute=False)
             tissue.plot_actin_processing(png_dump)
             tissue.create_cell_mask()
 
